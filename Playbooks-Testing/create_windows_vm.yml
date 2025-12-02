@@ -1,5 +1,16 @@
 ---
-- name: Deploy or remove a Windows Server VM in existing RG
+- name: Check if VM already exists
+  azure_rm_virtualmachine_info:
+    resource_group: "{{ resource_group }}"
+    name: "{{ vm_name }}"
+  register: vm_info
+
+- name: Fail when VM already exists
+  ansible.builtin.fail:
+    msg: "VM {{ vm_name }} already exists. Aborting to avoid accidental update."
+  when: vm_info.virtual_machines | length > 0
+
+- name: Create a Windows Server VM
   hosts: localhost
   connection: local
   collections:
@@ -16,15 +27,15 @@
     subnet_name: default            # existing subnet
 
     admin_username: azureuser
-    admin_password: "P@ssw0rd1234!!"   # change to a proper secret
+    admin_password: "P@ssw0rd1234!!"   # change to a proper secret or vault
     vm_size: Standard_D2as_v5
     sku: 2022-datacenter
 
     disk_size_gb: 128
     managed_disk_type: Premium_LRS
 
-    # Behaviour toggles
-    vm_state: present                  # "present" or "absent"
+    # Behaviour toggles (for create)
+    vm_state: present                  # keep as "present" for this playbook
 
     enable_accelerated_networking: false   # true / false
 
@@ -42,8 +53,10 @@
         destination_address_prefix: "*"
         destination_port_range: "3389"
 
-    delete_os_disk_with_vm: true       # applies when vm_state = "absent"
-    delete_nic_with_vm: true           # applies when vm_state = "absent"
+    # These toggles are mainly used by the delete playbook,
+    # but can stay here to keep vars consistent
+    delete_os_disk_with_vm: true
+    delete_nic_with_vm: true
 
   tasks:
     - name: Create public IP if requested
@@ -85,7 +98,7 @@
           - name: ipconfig1
       when: vm_state == "present" and public_ip_mode == "none" and nsg_mode == "none"
 
-    - name: Ensure Windows VM is in desired state
+    - name: Ensure Windows VM is present
       azure_rm_virtualmachine:
         resource_group: "{{ resource_group }}"
         name: "{{ vm_name }}"
@@ -96,10 +109,8 @@
         vm_size: "{{ vm_size }}"
         os_type: Windows
 
-        # OS disk settings (no storage_profile block)
         managed_disk_type: "{{ managed_disk_type }}"
         os_disk_size_gb: "{{ disk_size_gb }}"
-        # os_disk_caching: ReadWrite        # optional, if you want to be explicit
 
         image:
           offer: WindowsServer
@@ -107,12 +118,4 @@
           sku: "{{ sku }}"
           version: latest
 
-        state: "{{ vm_state }}"
-
-        # What to remove when state = absent
-        remove_on_absent: >-
-          {{
-            (['network_interfaces'] if delete_nic_with_vm else [])
-            + (['virtual_storage'] if delete_os_disk_with_vm else [])
-            + (['public_ips'] if public_ip_mode == 'new' else [])
-          }}
+        state: present
