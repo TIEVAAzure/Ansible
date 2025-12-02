@@ -1,0 +1,72 @@
+---
+- name: Remove a Windows Server VM and related resources
+  hosts: localhost
+  connection: local
+  collections:
+    - azure.azcollection
+
+  vars:
+    # Core settings (should match the VM you created)
+    resource_group: rg-mg-learn-uksouth-001
+    location: uksouth
+
+    vm_name: ansible-test
+    nic_name: nic-win-ansible-test
+    vnet_name: GILO-DC-01-vnet
+    subnet_name: default
+
+    # Not really used for delete, but kept for consistency
+    admin_username: azureuser
+    admin_password: "P@ssw0rd1234!!"
+    vm_size: Standard_D2as_v5
+    sku: 2022-datacenter
+
+    disk_size_gb: 128
+    managed_disk_type: Premium_LRS
+
+    # Behaviour toggles for delete
+    vm_state: absent
+
+    public_ip_mode: "none"             # set to "new" if you had a PIP created
+    nsg_mode: "none"                   # set to "basic" if you had an NSG created
+
+    delete_os_disk_with_vm: true       # remove OS/data disks
+    delete_nic_with_vm: true           # remove NIC
+    delete_nsg_with_vm: true           # new toggle for NSG cleanup
+
+  tasks:
+    - name: Ensure Windows VM is absent (let module remove associated resources)
+      azure_rm_virtualmachine:
+        resource_group: "{{ resource_group }}"
+        name: "{{ vm_name }}"
+        location: "{{ location }}"
+        state: absent
+        remove_on_absent: >-
+          {{
+            (['network_interfaces'] if delete_nic_with_vm else [])
+            + (['virtual_storage'] if delete_os_disk_with_vm else [])
+            + (['public_ips'] if public_ip_mode == 'new' else [])
+          }}
+
+    # Explicit cleanup in case anything is left
+
+    - name: Remove NIC if still present
+      azure_rm_networkinterface:
+        resource_group: "{{ resource_group }}"
+        name: "{{ nic_name }}"
+        state: absent
+      when: delete_nic_with_vm
+
+    - name: Remove public IP if it was created
+      azure_rm_publicipaddress:
+        resource_group: "{{ resource_group }}"
+        name: "{{ vm_name }}-pip"
+        state: absent
+      when: public_ip_mode == "new"
+
+    - name: Remove NSG if it was created
+      azure_rm_securitygroup:
+        resource_group: "{{ resource_group }}"
+        name: "{{ vm_name }}-nsg"
+        state: absent
+      when: delete_nsg_with_vm and nsg_mode != "none"
