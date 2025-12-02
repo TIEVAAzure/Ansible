@@ -1,0 +1,18 @@
+---
+- 
+  connection: local
+  gather_facts: false
+  hosts: "{{ group_1 }}"
+  name: "Snapshot VM"
+  tasks: 
+    - 
+      name: "Take snapshot of VM"
+      vmware_guest_snapshot: 
+        datacenter: Custodian DR
+        description: "snapshot before windows updates are installed"
+        folder: "/Custodian DR/{{ inv_folder }}/"
+        hostname: "10.94.94.52"
+        name: "{{ inv_name }}"
+        snapshot_name: pre_Win_Updates
+        state: present
+        validate_certs: false

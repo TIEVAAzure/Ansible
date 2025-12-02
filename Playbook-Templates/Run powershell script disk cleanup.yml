@@ -1,0 +1,24 @@
+---
+- name: "Copy script and then run"
+  hosts: "{{ group_1 }}"
+  vars:
+    ansible_connection: winrm
+    ansible_winrm_transport: ntlm
+    ansible_port: 5985
+    ansible_winrm_server_cert_validation: ignore
+    ansible_become_user: "{{ user_id }}"
+    ansible_become_pass: "{{ password }}"
+    
+  tasks: 
+  - name: "Make Dir"
+    win_shell: mkdir C:/Ansible
+  - name: "Copy a script"
+    win_copy:
+      src: "\\\\{{ server }}\\Ansible\\Start-Cleanup.ps1"
+      dest: "C:/Ansible/Start-Cleanup.ps1"
+      remote_src: True
+    become: yes
+    become_method: runas
+    become_flags: logon_type=new_credentials logon_flags=netcredentials_only
+  - name: "Run a script"
+    win_command: powershell.exe -ExecutionPolicy ByPass -File C:/Ansible/Start-Cleanup.ps1

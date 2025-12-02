@@ -1,0 +1,21 @@
+---
+- name: "Copy script locally and then run"
+  hosts: "{{ group_1 }}"
+  vars:
+    ansible_connection: winrm
+    ansible_winrm_transport: credssp
+    ansible_port: 5985
+    ansible_winrm_server_cert_validation: ignore
+    ansible_become_user: "{{ user_id }}"
+    ansible_become_pass: "{{ password }}"
+    
+  tasks: 
+  - name: "Copy a script from local"
+    win_copy:
+      src: /ansiblescripts/{{ Script_name }}
+      dest: C:/serverscripts/{{ Script_name }}
+    become: yes
+    become_method: runas
+    become_flags: logon_type=new_credentials logon_flags=netcredentials_only
+  - name: "Run a script"
+    win_command: powershell.exe -ExecutionPolicy ByPass -File C:/serverscripts/{{ Script_name }}

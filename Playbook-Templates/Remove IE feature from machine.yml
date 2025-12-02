@@ -1,0 +1,17 @@
+---
+- name: "Remove IE feature from machine"
+  hosts: "{{ group_1 }}"
+  vars:
+    ansible_connection: winrm
+    ansible_become_user: "{{ user_id }}"
+    ansible_become_pass: "{{ password }}"
+    ansible_winrm_transport: ntlm
+    ansible_port: 5985
+    ansible_winrm_server_cert_validation: ignore
+    
+  tasks: 
+  - name: "Remove IE feature from machine"
+    win_shell: -ExecutionPolicy ByPass Disable-WindowsOptionalFeature -FeatureName Internet-Explorer-Optional-amd64 –Online
+    become: yes
+    become_user: "{{ user_id }}"
+    become_method: runas

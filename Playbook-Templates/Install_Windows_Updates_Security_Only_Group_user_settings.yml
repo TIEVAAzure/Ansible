@@ -1,0 +1,27 @@
+---
+- name: Install windows updates and report back
+  hosts: "{{ group_1 }}"
+  vars:
+    ansible_connection: winrm
+    ansible_user: "{{ user_id }}"
+    ansible_password: "{{ password }}"
+    ansible_winrm_transport: ntlm
+    ansible_port: 5985
+    ansible_winrm_server_cert_validation: ignore
+    
+  tasks:
+  
+  - name: Install updates
+    win_updates:
+     category_names:
+       - SecurityUpdates
+       - CriticalUpdates
+       - DefinitionUpdates
+       - UpdateRollups
+     blacklist:
+       - Microsoft .NET Framework 3.5 on
+       - .NET FrameWork
+     log_path: C:\ansible_installed_updates.txt
+     reboot: yes
+     reboot_timeout: 5400
+...

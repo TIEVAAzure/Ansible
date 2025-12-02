@@ -1,0 +1,18 @@
+--- 
+- 
+  connection: local
+  gather_facts: false
+  hosts: "{{ group_1 }}"
+  name: "Remove Snapshot on VM"
+  tasks: 
+    - 
+      name: "Remove snapshot of VM"
+      vmware_guest_snapshot: 
+        datacenter: HTL
+        description: "snapshot before windows updates are installed"
+        folder: "/HTL/{{ inv_folder }}/"
+        hostname: "10.94.94.32"
+        name: "{{ inv_name }}"
+        snapshot_name: pre_Win_Updates
+        state: absent
+        validate_certs: false

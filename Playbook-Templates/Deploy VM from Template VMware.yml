@@ -1,0 +1,70 @@
+--- 
+-
+  connection: local
+  gather_facts: false
+  hosts: all
+  name: "Create a VM from a template"
+  tasks:
+
+- name: Create a Windows virtual machine from a template
+  vmware_guest:
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    datacenter: HTL
+    cluster: HTL Shared Hosts
+    hostname: "10.94.94.32"
+    folder: "{{ folder }}"
+    name: "{{ name }}"
+    state: poweredon
+    template: "{{ template }}"
+    customization_spec: "{{ customization }}"  
+    disk:
+    - size_gb: "{{ num }}"
+      type: "{{ thin }}"
+      datastore: "{{ datastore }}"
+    hardware:
+      memory_mb: "{{ ram }}"
+      num_cpus: "{{ socket }}"
+      num_cpu_cores_per_socket: "{{ vcpu }}"
+      scsi: paravirtual
+      memory_reservation_lock: True
+      hotadd_memory: True
+    cdrom:
+        - controller_number: 0
+          unit_number: 0
+          state: present
+    networks:
+       name: "{{ portgroup }}"
+       ip: "{{ ip }}"
+       netmask: "{{ netmask }}"
+       gateway: "{{ gateway }}"
+       dns_servers:
+        - "{{ dns1 }}"
+        - "{{ dns2 }}"
+       type: "{{ config }}"
+       device_type: "{{ type }}"
+       dvswitch_name: "{{ dvswitch_name }}"
+       start_connected: yes
+       
+              
+- name: Sleep for 900 seconds and continue with play
+  wait_for:
+    timeout: 900
+  delegate_to: localhost
+  
+  
+- name: "Install Chocolatey Packages"
+  hosts: "{{ ip }}"
+  vars:
+    ansible_connection: winrm
+    ansible_password: Un1f1cat!0N7
+    ansible_port: 5985
+    ansible_user: htladmin
+    ansible_winrm_server_cert_validation: ignore
+    ansible_winrm_transport: ntlm
+
+ 
+- name: Install chocolatey package
+  win_chocolatey:
+      name: "{{ choco_packages }}"
+      state: "{{ state }}"
