@@ -106,7 +106,6 @@
 
         # OS disk settings (no storage_profile block)
         managed_disk_type: "{{ managed_disk_type }}"
-        os_disk_name: "{{ vm_name }}-osdisk }}"
         os_disk_size_gb: "{{ disk_size_gb }}"
         # os_disk_caching: ReadWrite        # optional, if you want to be explicit
 
