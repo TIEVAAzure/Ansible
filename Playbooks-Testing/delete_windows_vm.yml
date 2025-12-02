@@ -15,12 +15,6 @@
     vnet_name: GILO-DC-01-vnet
     subnet_name: default
 
-    # Not really used for delete, but kept for consistency
-    admin_username: azureuser
-    admin_password: "P@ssw0rd1234!!"
-    vm_size: Standard_D2as_v5
-    sku: 2022-datacenter
-
     disk_size_gb: 128
     managed_disk_type: Premium_LRS
 
