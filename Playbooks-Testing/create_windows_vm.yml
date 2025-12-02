@@ -1,4 +1,9 @@
----
+  tasks:
+    - name: Ensure Python 'packaging' library is installed
+      ansible.builtin.pip:
+        name: packaging
+        state: present
+
 - name: Deploy or remove a Windows Server VM in existing RG
   hosts: localhost
   connection: local
