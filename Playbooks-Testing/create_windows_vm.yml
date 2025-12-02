@@ -55,7 +55,7 @@
     - name: Fail when VM already exists (create-only behaviour)
       ansible.builtin.fail:
         msg: "VM {{ vm_name }} already exists in {{ resource_group }}. Aborting to avoid accidental update."
-      when: (vm_info.virtual_machines | default([])) | length > 0
+      when: (vm_info.vms | default([])) | length > 0
 
     - name: Create public IP if requested
       azure_rm_publicipaddress:
