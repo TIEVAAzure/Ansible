@@ -1,14 +1,15 @@
-  tasks:
-    - name: Ensure Python 'packaging' library is installed
-      ansible.builtin.pip:
-        name: packaging
-        state: present
-
+---
 - name: Deploy or remove a Windows Server VM in existing RG
   hosts: localhost
   connection: local
   collections:
     - azure.azcollection
+
+  pre_tasks:
+    - name: Ensure Python 'packaging' library is installed
+      ansible.builtin.pip:
+        name: packaging
+        state: present
 
   vars:
     # Core settings
@@ -17,8 +18,8 @@
 
     vm_name: ansible-test
     nic_name: nic-win-ansible-test
-    vnet_name: GILO-DC-01-vnet          # existing VNet
-    subnet_name: default           # existing subnet
+    vnet_name: GILO-DC-01-vnet      # existing VNet
+    subnet_name: default            # existing subnet
 
     admin_username: azureuser
     admin_password: "P@ssw0rd1234!!"   # change to a proper secret
@@ -103,7 +104,7 @@
 
         # OS disk settings (no storage_profile block)
         managed_disk_type: "{{ managed_disk_type }}"
-        os_disk_name: "{{ vm_name }}-osdisk"
+        os_disk_name: "{{ vm_name }}-osdisk }}"
         os_disk_size_gb: "{{ disk_size_gb }}"
         # os_disk_caching: ReadWrite        # optional, if you want to be explicit
 
@@ -123,5 +124,3 @@
             + (['network_interfaces'] if delete_nic_with_vm else [])
             + (['public_ips'] if public_ip_mode == 'new' else [])
           }}
-
-
