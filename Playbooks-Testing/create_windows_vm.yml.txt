@@ -1,0 +1,122 @@
+---
+- name: Deploy or remove a Windows Server VM in existing RG
+  hosts: localhost
+  connection: local
+  collections:
+    - azure.azcollection
+
+  vars:
+    # Core settings
+    resource_group: rg-mg-learn-uksouth-001
+    location: uksouth
+
+    vm_name: ansible-test
+    nic_name: nic-win-ansible-test
+    vnet_name: GILO-DC-01-vnet          # existing VNet
+    subnet_name: default           # existing subnet
+
+    admin_username: azureuser
+    admin_password: "P@ssw0rd1234!!"   # change to a proper secret
+    vm_size: Standard_D2as_v5
+    sku: 2022-datacenter
+
+    disk_size_gb: 128
+    managed_disk_type: Premium_LRS
+
+    # Behaviour toggles
+    vm_state: present                  # "present" or "absent"
+
+    enable_accelerated_networking: false   # true / false
+
+    public_ip_mode: "none"             # "none" or "new"
+    nsg_mode: "none"                   # "none" or "basic"
+
+    nsg_basic_rules:
+      - name: Allow-RDP
+        protocol: Tcp
+        direction: Inbound
+        priority: 1000
+        access: Allow
+        source_address_prefix: "*"
+        source_port_range: "*"
+        destination_address_prefix: "*"
+        destination_port_range: "3389"
+
+    delete_os_disk_with_vm: true       # applies when vm_state = "absent"
+    delete_nic_with_vm: true           # applies when vm_state = "absent"
+
+  tasks:
+    - name: Create public IP if requested
+      azure_rm_publicipaddress:
+        resource_group: "{{ resource_group }}"
+        name: "{{ vm_name }}-pip"
+        allocation_method: Static
+      when: public_ip_mode == "new" and vm_state == "present"
+
+    - name: Ensure NSG exists (with optional basic rules)
+      azure_rm_securitygroup:
+        resource_group: "{{ resource_group }}"
+        name: "{{ vm_name }}-nsg"
+        location: "{{ location }}"
+        rules: "{{ nsg_basic_rules if nsg_mode == 'basic' else [] }}"
+      when: nsg_mode != "none" and vm_state == "present"
+
+    - name: Ensure NIC with NSG and/or PIP exists
+      azure_rm_networkinterface:
+        resource_group: "{{ resource_group }}"
+        name: "{{ nic_name }}"
+        virtual_network: "{{ vnet_name }}"
+        subnet: "{{ subnet_name }}"
+        enable_accelerated_networking: "{{ enable_accelerated_networking }}"
+        network_security_group: "{{ vm_name }}-nsg"
+        ip_configurations:
+          - name: ipconfig1
+            public_ip_name: "{{ vm_name }}-pip"
+      when: vm_state == "present" and (public_ip_mode == "new" or nsg_mode != "none")
+
+    - name: Ensure NIC without NSG or PIP exists
+      azure_rm_networkinterface:
+        resource_group: "{{ resource_group }}"
+        name: "{{ nic_name }}"
+        virtual_network: "{{ vnet_name }}"
+        subnet: "{{ subnet_name }}"
+        enable_accelerated_networking: "{{ enable_accelerated_networking }}"
+        ip_configurations:
+          - name: ipconfig1
+      when: vm_state == "present" and public_ip_mode == "none" and nsg_mode == "none"
+
+    - name: Ensure Windows VM is in desired state
+      azure_rm_virtualmachine:
+        resource_group: "{{ resource_group }}"
+        name: "{{ vm_name }}"
+        location: "{{ location }}"
+        admin_username: "{{ admin_username }}"
+        admin_password: "{{ admin_password }}"
+        network_interfaces: "{{ nic_name }}"
+        vm_size: "{{ vm_size }}"
+        os_type: Windows
+
+        # OS disk settings (no storage_profile block)
+        managed_disk_type: "{{ managed_disk_type }}"
+        os_disk_name: "{{ vm_name }}-osdisk"
+        os_disk_size_gb: "{{ disk_size_gb }}"
+        # os_disk_caching: ReadWrite        # optional, if you want to be explicit
+
+        image:
+          offer: WindowsServer
+          publisher: MicrosoftWindowsServer
+          sku: "{{ sku }}"
+          version: latest
+
+        state: "{{ vm_state }}"
+
+        # What to remove when state = absent
+        remove_on_absent: >-
+          {{
+            ['virtual_machine']
+            + (['os_disk'] if delete_os_disk_with_vm else [])
+            + (['network_interfaces'] if delete_nic_with_vm else [])
+            + (['public_ips'] if public_ip_mode == 'new' else [])
+          }}
+
+
