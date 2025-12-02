@@ -113,6 +113,6 @@
         remove_on_absent: >-
           {{
             (['network_interfaces'] if delete_nic_with_vm else [])
-          + (['virtual_storage'] if delete_os_disk_with_vm else [])
-          + (['public_ips'] if public_ip_mode == 'new' else [])
-        }}
+            + (['virtual_storage'] if delete_os_disk_with_vm else [])
+            + (['public_ips'] if public_ip_mode == 'new' else [])
+          }}
