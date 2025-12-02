@@ -6,9 +6,11 @@
     - azure.azcollection
 
   pre_tasks:
-    - name: Ensure Python 'packaging' library is installed
+    - name: Install required Python libraries for Azure modules
       ansible.builtin.pip:
-        name: packaging
+        name:
+          - packaging
+          - setuptools
         state: present
 
   vars:
