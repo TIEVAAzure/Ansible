@@ -19,7 +19,20 @@
         resource_group: "{{ azure_resource_group }}"
         name: "{{ item }}"
         restarted: yes
-      loop: "{{ azure_vm_names }}"
+      loop: "{{ azure_vm_names.splitlines() }}"
       tags:
         - reboot
         - azure_reboot
+
+
+
+
+
+
+
+
+
+
+
+
+
