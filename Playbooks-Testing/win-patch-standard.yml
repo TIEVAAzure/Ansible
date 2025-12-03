@@ -1,0 +1,64 @@
+---
+- name: Patch Windows servers
+  hosts: "{{ group_1 }}"
+  gather_facts: no
+  serial: 5                 # patch 5 at a time; tune per environment
+  max_fail_percentage: 20   # bail out if too many fail
+
+  # Connection/auth comes from inventory + AWX credentials
+  # This playbook only cares about *what* to patch, not *how* to connect.
+
+  vars:
+    # Profile: all | security_only | rollups_security
+    patch_profile: "all"
+
+    # Optional pause before patching (e.g. let app cache build)
+    pre_patch_pause_minutes: 0
+
+    # Optional blacklist (e.g. SQL servers)
+    patch_blacklist: []
+
+    # Logging / reboot options
+    patch_log_path: "C:\\Ansible\\ansible_installed_updates.txt"
+    patch_reboot: true
+    patch_reboot_timeout: 5400
+
+    # Preset category lists (from your old playbooks)
+    patch_presets:
+      all:
+        - CriticalUpdates
+        - SecurityUpdates
+        - UpdateRollups
+        - Application
+        - DefinitionUpdates
+        - FeaturePacks
+        - ServicePacks
+        - Tools
+        - Updates
+        - Drivers
+      security_only:
+        - SecurityUpdates
+      rollups_security:
+        - UpdateRollups
+        - SecurityUpdates
+
+  tasks:
+    - name: Optional pause before patching
+      ansible.builtin.pause:
+        minutes: "{{ pre_patch_pause_minutes | int }}"
+      when: pre_patch_pause_minutes | int > 0
+
+    - name: Install Windows updates ({{ patch_profile }})
+      ansible.windows.win_updates:
+        category_names: "{{ patch_presets[patch_profile] }}"
+        blacklist: "{{ patch_blacklist | default(omit) }}"
+        log_path: "{{ patch_log_path }}"
+        reboot: "{{ patch_reboot | bool }}"
+        reboot_timeout: "{{ patch_reboot_timeout | int }}"
+      register: patch_result
+
+    - name: Show patch summary
+      ansible.builtin.debug:
+        msg: >
+          Installed {{ patch_result.updates | length | default(0) }} updates;
+          reboot_required={{ patch_result.reboot_required | default(false) }}

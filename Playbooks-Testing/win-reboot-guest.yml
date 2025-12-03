@@ -1,0 +1,25 @@
+---
+- name: Reboot Windows guests via OS
+  hosts: "{{ group_1 }}"
+  gather_facts: no
+
+  # WinRM / auth now expected from:
+  # - Inventory/group_vars, and/or
+  # - AWX Machine credential
+
+  serial: 5                 # reboot 5 machines at a time
+  max_fail_percentage: 20   # stop if too many fail
+
+  tasks:
+    - name: Check WinRM is reachable before reboot
+      ansible.windows.win_ping:
+
+    - name: Reboot Windows host (guest-level)
+      ansible.windows.win_reboot:
+        msg: "Reboot initiated by Tieva automation"
+        pre_reboot_delay: 60
+        post_reboot_delay: 60
+        reboot_timeout: 3600
+      tags:
+        - reboot
+        - guest_reboot

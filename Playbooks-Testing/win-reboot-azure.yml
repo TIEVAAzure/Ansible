@@ -1,0 +1,25 @@
+---
+- name: Reboot Azure VMs via control plane
+  hosts: localhost
+  connection: local
+  gather_facts: no
+
+  # Auth comes from AWX Azure credential / env vars.
+  # Only functional parameters are defined here.
+
+  vars:
+    azure_resource_group: "rg-mg-learn-uksouth-001"
+    azure_vm_names:
+      - "vm-name-1"
+      - "vm-name-2"
+
+  tasks:
+    - name: Reboot VM via Azure API (no guest access needed)
+      azure.azcollection.azure_rm_virtualmachine:
+        resource_group: "{{ azure_resource_group }}"
+        name: "{{ item }}"
+        restarted: yes
+      loop: "{{ azure_vm_names }}"
+      tags:
+        - reboot
+        - azure_reboot

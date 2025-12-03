@@ -1,0 +1,45 @@
+---
+- name: Search for available Windows Updates
+  hosts: "{{ group_1 }}"
+  gather_facts: no
+
+  # Auth & connection come from AWX Machine Credential + inventory
+
+  vars:
+    # patch_profile options: all | security_only | rollups_security
+    patch_profile: "all"
+
+    # Optional blacklist (e.g., "SQL Server")
+    patch_blacklist: []
+
+    # Same preset category bundle used in the full patching playbook
+    patch_presets:
+      all:
+        - CriticalUpdates
+        - SecurityUpdates
+        - UpdateRollups
+        - Application
+        - DefinitionUpdates
+        - FeaturePacks
+        - ServicePacks
+        - Tools
+        - Updates
+        - Drivers
+      security_only:
+        - SecurityUpdates
+      rollups_security:
+        - UpdateRollups
+        - SecurityUpdates
+
+  tasks:
+
+    - name: Search for updates ({{ patch_profile }})
+      ansible.windows.win_updates:
+        category_names: "{{ patch_presets[patch_profile] }}"
+        blacklist: "{{ patch_blacklist | default(omit) }}"
+        state: searched        # <— This is the key for search-only mode
+      register: update_scan
+
+    - name: Show available updates for host
+      ansible.builtin.debug:
+        var: update_scan
