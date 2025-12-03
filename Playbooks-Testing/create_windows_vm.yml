@@ -51,6 +51,7 @@
         resource_group: "{{ resource_group }}"
         name: "{{ vm_name }}"
       register: vm_info
+      failed_when: false
 
     - name: Fail when VM already exists (create-only behaviour)
       ansible.builtin.fail:
