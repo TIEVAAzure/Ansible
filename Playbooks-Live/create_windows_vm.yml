@@ -11,7 +11,7 @@
     location: uksouth
 
     vm_name: ansible-test
-    nic_name: nic-win-ansible-test
+    nic_name: "nic-{{ vm_name }}"
     vnet_name: GILO-DC-01-vnet      # existing VNet
     subnet_name: default            # existing subnet
 
