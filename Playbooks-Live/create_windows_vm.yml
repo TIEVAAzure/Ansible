@@ -140,7 +140,7 @@
 
     - name: Ensure Windows VM is present
       azure.azcollection.azure_rm_virtualmachine:
-        rresource_group: "{{ rg_name }}"
+        resource_group: "{{ rg_name }}"
         name: "{{ vm_name }}"
         location: "{{ location }}"
 
