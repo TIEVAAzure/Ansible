@@ -60,6 +60,7 @@
     # Optional network extras
     # -----------------------------
 
+    # Optional network extras
     - name: Create public IP for VM (optional)
       azure.azcollection.azure_rm_publicipaddress:
         resource_group: "{{ resource_group }}"
@@ -69,7 +70,7 @@
         state: present
       when: public_ip_mode == "new" and vm_state == "present"
 
-    - name: Ensure NSG exists (no rules by default)
+    - name: Ensure NSG exists (empty by default)
       azure.azcollection.azure_rm_securitygroup:
         resource_group: "{{ resource_group }}"
         name: "{{ vm_name }}-nsg"
@@ -77,21 +78,61 @@
         state: present
       when: nsg_mode == "basic" and vm_state == "present"
 
-    - name: Ensure NIC with NSG and/or PIP exists
+    # NIC with no NSG and no PIP
+    - name: Ensure NIC without NSG or PIP exists
       azure.azcollection.azure_rm_networkinterface:
         resource_group: "{{ resource_group }}"
         name: "{{ nic_name }}"
         virtual_network: "{{ vnet_name }}"
-        subnet: "{{ subnet_name }}"
+        subnet_name: "{{ subnet_name }}"
         enable_accelerated_networking: "{{ enable_accelerated_networking | bool }}"
-        network_security_group: >-
-          {{ nsg_mode == 'basic' | ternary(vm_name ~ '-nsg', omit) }}
         ip_configurations:
           - name: ipconfig1
-            public_ip_address: >-
-              {{ public_ip_mode == 'new' | ternary(vm_name ~ '-pip', omit) }}
         state: present
-      when: vm_state == "present"
+      when: vm_state == "present" and public_ip_mode == "none" and nsg_mode == "none"
+
+    # NIC with PIP only
+    - name: Ensure NIC with PIP only exists
+      azure.azcollection.azure_rm_networkinterface:
+        resource_group: "{{ resource_group }}"
+        name: "{{ nic_name }}"
+        virtual_network: "{{ vnet_name }}"
+        subnet_name: "{{ subnet_name }}"
+        enable_accelerated_networking: "{{ enable_accelerated_networking | bool }}"
+        ip_configurations:
+          - name: ipconfig1
+            public_ip_address_name: "{{ vm_name }}-pip"
+        state: present
+      when: vm_state == "present" and public_ip_mode == "new" and nsg_mode == "none"
+
+    # NIC with NSG only
+    - name: Ensure NIC with NSG only exists
+      azure.azcollection.azure_rm_networkinterface:
+        resource_group: "{{ resource_group }}"
+        name: "{{ nic_name }}"
+        virtual_network: "{{ vnet_name }}"
+        subnet_name: "{{ subnet_name }}"
+        enable_accelerated_networking: "{{ enable_accelerated_networking | bool }}"
+        security_group: "{{ vm_name }}-nsg"
+        ip_configurations:
+          - name: ipconfig1
+        state: present
+      when: vm_state == "present" and public_ip_mode == "none" and nsg_mode == "basic"
+
+    # NIC with NSG and PIP
+    - name: Ensure NIC with NSG and PIP exists
+      azure.azcollection.azure_rm_networkinterface:
+        resource_group: "{{ resource_group }}"
+        name: "{{ nic_name }}"
+        virtual_network: "{{ vnet_name }}"
+        subnet_name: "{{ subnet_name }}"
+        enable_accelerated_networking: "{{ enable_accelerated_networking | bool }}"
+        security_group: "{{ vm_name }}-nsg"
+        ip_configurations:
+          - name: ipconfig1
+            public_ip_address_name: "{{ vm_name }}-pip"
+        state: present
+      when: vm_state == "present" and public_ip_mode == "new" and nsg_mode == "basic"
 
     # -----------------------------
     # VM creation
