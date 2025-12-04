@@ -7,7 +7,7 @@
 
   vars:
     # Core settings (defaults - usually overridden by AWX survey)
-    resource_group: rg-mg-learn-uksouth-001
+    rg_name: rg-mg-learn-uksouth-001
     location: uksouth
 
     vm_name: ansible-test
@@ -46,14 +46,14 @@
 
     - name: Check if VM already exists
       azure.azcollection.azure_rm_virtualmachine_info:
-        resource_group: "{{ resource_group }}"
+        resource_group: "{{ rg_name }}"
         name: "{{ vm_name }}"
       register: vm_info
       failed_when: false
 
     - name: Fail when VM already exists (create-only behaviour)
       ansible.builtin.fail:
-        msg: "VM {{ vm_name }} already exists in {{ resource_group }}. Aborting to avoid accidental update."
+        msg: "VM {{ vm_name }} already exists in {{ rg_name }}. Aborting to avoid accidental update."
       when: (vm_info.vms | default([])) | length > 0
 
     # -----------------------------
@@ -63,7 +63,7 @@
     # Optional network extras
     - name: Create public IP for VM (optional)
       azure.azcollection.azure_rm_publicipaddress:
-        resource_group: "{{ resource_group }}"
+        resource_group: "{{ rg_name }}"
         name: "{{ vm_name }}-pip"
         allocation_method: Static
         sku: Standard
@@ -72,7 +72,7 @@
 
     - name: Ensure NSG exists (empty by default)
       azure.azcollection.azure_rm_securitygroup:
-        resource_group: "{{ resource_group }}"
+        resource_group: "{{ rg_name }}"
         name: "{{ vm_name }}-nsg"
         location: "{{ location }}"
         state: present
@@ -81,7 +81,7 @@
     # NIC with no NSG and no PIP
     - name: Ensure NIC without NSG or PIP exists
       azure.azcollection.azure_rm_networkinterface:
-        resource_group: "{{ resource_group }}"
+        resource_group: "{{ rg_name }}"
         name: "{{ nic_name }}"
         virtual_network: "{{ vnet_name }}"
         subnet_name: "{{ subnet_name }}"
@@ -94,7 +94,7 @@
     # NIC with PIP only
     - name: Ensure NIC with PIP only exists
       azure.azcollection.azure_rm_networkinterface:
-        resource_group: "{{ resource_group }}"
+        resource_group: "{{ rg_name }}"
         name: "{{ nic_name }}"
         virtual_network: "{{ vnet_name }}"
         subnet_name: "{{ subnet_name }}"
@@ -108,7 +108,7 @@
     # NIC with NSG only
     - name: Ensure NIC with NSG only exists
       azure.azcollection.azure_rm_networkinterface:
-        resource_group: "{{ resource_group }}"
+        resource_group: "{{ rg_name }}"
         name: "{{ nic_name }}"
         virtual_network: "{{ vnet_name }}"
         subnet_name: "{{ subnet_name }}"
@@ -122,7 +122,7 @@
     # NIC with NSG and PIP
     - name: Ensure NIC with NSG and PIP exists
       azure.azcollection.azure_rm_networkinterface:
-        resource_group: "{{ resource_group }}"
+        resource_group: "{{ rg_name }}"
         name: "{{ nic_name }}"
         virtual_network: "{{ vnet_name }}"
         subnet_name: "{{ subnet_name }}"
@@ -140,7 +140,7 @@
 
     - name: Ensure Windows VM is present
       azure.azcollection.azure_rm_virtualmachine:
-        resource_group: "{{ resource_group }}"
+        rresource_group: "{{ rg_name }}"
         name: "{{ vm_name }}"
         location: "{{ location }}"
 

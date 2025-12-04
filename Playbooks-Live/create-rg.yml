@@ -1,0 +1,20 @@
+---
+- name: Create Resource Group
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  collections:
+    - azure.azcollection
+
+  vars:
+    # AWX survey variables (example)
+    rg_name: "{{ rg_name | default('rg-mg-demo-uksouth-001') }}"
+    location: "{{ location | default('uksouth') }}"
+
+  tasks:
+    - name: Ensure resource group exists
+      azure_rm_resourcegroup:
+        name: "{{ rg_name }}"
+        location: "{{ location }}"
+        state: present

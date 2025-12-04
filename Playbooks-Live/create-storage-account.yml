@@ -1,0 +1,27 @@
+---
+- name: Create Storage Account
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  collections:
+    - azure.azcollection
+
+  vars:
+    # AWX survey variables
+    rg_name: "{{ rg_name }}"
+    sa_name: "{{ sa_name }}"
+    location: "{{ location | default('uksouth') }}"
+    sa_sku: "{{ sa_sku | default('Standard_LRS') }}"
+    sa_kind: "{{ sa_kind | default('StorageV2') }}"
+
+  tasks:
+    - name: Ensure storage account exists
+      azure_rm_storageaccount:
+        resource_group: "{{ rg_name }}"
+        name: "{{ sa_name }}"
+        location: "{{ location }}"
+        account_type: "{{ sa_sku }}"
+        kind: "{{ sa_kind }}"
+        https_only: true
+        state: present

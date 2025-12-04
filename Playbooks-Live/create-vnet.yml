@@ -1,0 +1,25 @@
+---
+- name: Create Virtual Network
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  collections:
+    - azure.azcollection
+
+  vars:
+    # AWX survey variables
+    rg_name: "{{ rg_name }}"
+    vnet_name: "{{ vnet_name }}"
+    location: "{{ location | default('uksouth') }}"
+    vnet_address_space: "{{ vnet_address_space | default('10.10.0.0/16') }}"
+
+  tasks:
+    - name: Ensure VNet exists
+      azure_rm_virtualnetwork:
+        resource_group: "{{ rg_name }}"
+        name: "{{ vnet_name }}"
+        address_prefixes:
+          - "{{ vnet_address_space }}"
+        location: "{{ location }}"
+        state: present
