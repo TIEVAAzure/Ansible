@@ -1,18 +1,13 @@
 FROM quay.io/ansible/awx-ee:24.6.1
 
+# Become root to install packages
 USER 0
 
-# Fix curl-minimal conflict and install Azure CLI
-RUN dnf swap -y curl-minimal curl && \
-    dnf install -y ca-certificates gnupg && \
-    rpm --import https://packages.microsoft.com/keys/microsoft.asc && \
-    echo "[azure-cli]" > /etc/yum.repos.d/azure-cli.repo && \
-    echo "name=Azure CLI" >> /etc/yum.repos.d/azure-cli.repo && \
-    echo "baseurl=https://packages.microsoft.com/yumrepos/azure-cli" >> /etc/yum.repos.d/azure-cli.repo && \
-    echo "enabled=1" >> /etc/yum.repos.d/azure-cli.repo && \
-    echo "gpgcheck=1" >> /etc/yum.repos.d/azure-cli.repo && \
-    echo "gpgkey=https://packages.microsoft.com/keys/microsoft.asc" >> /etc/yum.repos.d/azure-cli.repo && \
-    dnf install -y azure-cli && \
-    dnf clean all
+# Install pip (if needed) and basic build tools, then Azure CLI via pip
+RUN dnf install -y python3-pip gcc git && \
+    dnf clean all && \
+    python3 -m pip install --upgrade pip && \
+    python3 -m pip install azure-cli
 
+# Back to awx/runner user
 USER 1000
