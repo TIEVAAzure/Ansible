@@ -1,0 +1,54 @@
+---
+- name: Manage Azure VM power state (Start / Stop / Restart)
+  hosts: localhost
+  connection: local
+  gather_facts: no
+
+  # These will be overridden by AWX survey.
+  vars:
+    rg_name: ""
+    azure_vm_names: ""   # Multi-line string: one VM name per line
+    vm_action: "restart" # start | stop | restart
+
+  tasks:
+    - name: Validate vm_action choice
+      ansible.builtin.assert:
+        that:
+          - vm_action in ['start', 'stop', 'restart']
+        fail_msg: "vm_action must be one of: start, stop, restart (got '{{ vm_action }}')."
+
+    - name: Normalise VM list
+      ansible.builtin.set_fact:
+        vm_list: >-
+          {{ azure_vm_names.splitlines()
+             | map('trim')
+             | reject('equalto', '')
+             | list }}
+
+    - name: Show planned action
+      ansible.builtin.debug:
+        msg: "Will {{ vm_action }} the following VMs in '{{ rg_name }}': {{ vm_list }}"
+
+    - name: START VMs
+      azure.azcollection.azure_rm_virtualmachine:
+        resource_group: "{{ rg_name }}"
+        name: "{{ item }}"
+        started: yes
+      loop: "{{ vm_list }}"
+      when: vm_action == 'start'
+
+    - name: STOP (power off) VMs
+      azure.azcollection.azure_rm_virtualmachine:
+        resource_group: "{{ rg_name }}"
+        name: "{{ item }}"
+        stopped: yes
+      loop: "{{ vm_list }}"
+      when: vm_action == 'stop'
+
+    - name: RESTART VMs
+      azure.azcollection.azure_rm_virtualmachine:
+        resource_group: "{{ rg_name }}"
+        name: "{{ item }}"
+        restarted: yes
+      loop: "{{ vm_list }}"
+      when: vm_action == 'restart'
