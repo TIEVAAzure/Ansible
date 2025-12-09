@@ -84,23 +84,22 @@
 
     # 3) Build zone param for az
     - name: Build zone parameter for az disk create
-      ansible.builtin.set_fact:
-        zone_param: "{{ '--zone ' ~ vm_zone if vm_zone is not none else '' }}"
+  ansible.builtin.set_fact:
+    zone_param: "{{ '--zone ' ~ vm_zone if vm_zone is not none else '' }}"
 
     # 4) Create Windows Server upgrade media disk via az CLI
     - name: Create Windows Server upgrade media disk via az CLI
-      ansible.builtin.command: >
-        az disk create
-        -g {{ rg_name }}
-        -n {{ upgrade_disk_name }}
-        -l {{ vm_location }}
-        {{ zone_param }}
-        --sku {{ upgrade_disk_sku }}
-        --image-reference
-        MicrosoftWindowsServer:WindowsServerUpgrade:{{ upgrade_sku }}:latest
-        -o json
-      register: create_disk_cmd
-      changed_when: "'Succeeded' in create_disk_cmd.stdout or 'provisioningState\"' in create_disk_cmd.stdout"
+  ansible.builtin.command: >
+    az disk create
+    -g {{ rg_name }}
+    -n {{ upgrade_disk_name }}
+    -l {{ vm_location }}
+    {% if vm_zone is not none %} --zone {{ vm_zone }} {% endif %}
+    --sku {{ upgrade_disk_sku }}
+    --image-reference MicrosoftWindowsServer:WindowsServerUpgrade:{{ upgrade_sku }}:latest
+    -o json
+  register: create_disk_cmd
+  changed_when: "'Succeeded' in create_disk_cmd.stdout or 'provisioningState\"' in create_disk_cmd.stdout"
 
     - name: Show disk creation output
       ansible.builtin.debug:
