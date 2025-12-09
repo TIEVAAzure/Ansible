@@ -1,0 +1,148 @@
+---
+- name: Create and attach Windows Server upgrade media disk (zone-aware, path-validated)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  collections:
+    - azure.azcollection
+
+  vars:
+    # ------------------------------
+    # Inputs (AWX Survey)
+    # ------------------------------
+    rg_name: ""        # Resource group of the VM
+    vm_name: ""        # Name of the VM to upgrade
+
+    # Current OS version:
+    #   2012R2, 2016, 2019, 2022
+    source_os: ""
+
+    # Target upgrade SKU (WindowsServerUpgrade image SKU):
+    #   server2016Upgrade, server2019Upgrade, server2022Upgrade, server2025Upgrade
+    upgrade_sku: "server2019Upgrade"
+
+    # Disk name for the upgrade media
+    upgrade_disk_name: "ws-upgrade-{{ vm_name }}"
+
+    # Managed disk SKU for the upgrade disk
+    upgrade_disk_sku: "Standard_LRS"
+
+    # ------------------------------
+    # Microsoft-supported upgrade paths
+    # ------------------------------
+    valid_upgrade_paths:
+      "2012R2":
+        - server2016Upgrade
+        - server2019Upgrade
+        - server2025Upgrade
+      "2016":
+        - server2019Upgrade
+        - server2022Upgrade
+        - server2025Upgrade
+      "2019":
+        - server2022Upgrade
+        - server2025Upgrade
+      "2022":
+        - server2025Upgrade
+
+  tasks:
+
+    # ------------------------------------------------------------
+    # 1) Validate upgrade path
+    # ------------------------------------------------------------
+    - name: Validate requested upgrade path
+      ansible.builtin.assert:
+        that:
+          - source_os in valid_upgrade_paths
+          - upgrade_sku in valid_upgrade_paths[source_os]
+        fail_msg: >
+          Unsupported upgrade path: {{ source_os }} -> {{ upgrade_sku }}.
+          Allowed targets for {{ source_os }} are:
+          {{ valid_upgrade_paths[source_os] | join(', ') }}.
+
+    # ------------------------------------------------------------
+    # 2) Get VM info
+    # ------------------------------------------------------------
+    - name: Get VM info
+      azure.azcollection.azure_rm_virtualmachine_info:
+        resource_group: "{{ rg_name }}"
+        name: "{{ vm_name }}"
+      register: vm_info
+
+    - name: Fail if VM not found
+      ansible.builtin.fail:
+        msg: "VM '{{ vm_name }}' not found in RG '{{ rg_name }}'."
+      when: (vm_info.vms | default([])) | length == 0
+
+    - name: Extract VM location, zone and data disk LUNs
+      ansible.builtin.set_fact:
+        vm_location: "{{ vm_info.vms[0].location }}"
+        vm_zones: "{{ vm_info.vms[0].zones | default([]) }}"
+        existing_luns: >-
+          {{ (vm_info.vms[0].storage_profile.data_disks | default([]))
+             | map(attribute='lun') | list }}
+
+    - name: Determine VM primary zone (if any)
+      ansible.builtin.set_fact:
+        vm_zone: "{{ vm_zones[0] if vm_zones | length > 0 else None }}"
+
+    - name: Show VM location and zone
+      ansible.builtin.debug:
+        msg: >
+          VM '{{ vm_name }}' is in '{{ vm_location }}',
+          zone: {{ vm_zone | default('None (no-zone VM)') }}.
+
+    # ------------------------------------------------------------
+    # 3) Create Windows Server upgrade disk (must match VM zone)
+    # ------------------------------------------------------------
+    - name: Build zone parameter for az CLI
+      ansible.builtin.set_fact:
+        zone_param: "{{ '--zone ' ~ vm_zone if vm_zone is not none else '' }}"
+
+    - name: Create Windows Server upgrade media disk (zone-aware)
+      ansible.builtin.command: >
+        az disk create
+        -g {{ rg_name }}
+        -n {{ upgrade_disk_name }}
+        -l {{ vm_location }}
+        {{ zone_param }}
+        --sku {{ upgrade_disk_sku }}
+        --image-reference
+        MicrosoftWindowsServer:WindowsServerUpgrade:{{ upgrade_sku }}:latest
+        -o json
+      register: create_disk_cmd
+      changed_when: "'Succeeded' in create_disk_cmd.stdout"
+
+    - name: Show disk creation output
+      ansible.builtin.debug:
+        var: create_disk_cmd.stdout
+
+    # ------------------------------------------------------------
+    # 4) Determine free LUN
+    # ------------------------------------------------------------
+    - name: Choose next free LUN
+      ansible.builtin.set_fact:
+        upgrade_lun: "{{ (existing_luns | max + 1) if (existing_luns | length > 0) else 0 }}"
+
+    - name: Show chosen LUN
+      ansible.builtin.debug:
+        msg: "Upgrade disk will attach on LUN {{ upgrade_lun }}."
+
+    # ------------------------------------------------------------
+    # 5) Attach upgrade disk
+    # ------------------------------------------------------------
+    - name: Attach upgrade disk to VM
+      azure.azcollection.azure_rm_manageddisk:
+        resource_group: "{{ rg_name }}"
+        name: "{{ upgrade_disk_name }}"
+        managed_by: "{{ vm_name }}"
+        lun: "{{ upgrade_lun }}"
+        state: present
+      register: attach_result
+
+    - name: Confirm upgrade disk attached
+      ansible.builtin.debug:
+        msg: >
+          Upgrade disk '{{ upgrade_disk_name }}' attached to VM '{{ vm_name }}'
+          on LUN {{ upgrade_lun }} (Zone={{ vm_zone | default('None') }}).
