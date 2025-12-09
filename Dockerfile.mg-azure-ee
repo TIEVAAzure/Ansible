@@ -1,13 +1,13 @@
 FROM quay.io/ansible/awx-ee:24.6.1
 
-# Become root to install packages
 USER 0
 
-# Install pip (if needed) and basic build tools, then Azure CLI via pip
-RUN dnf install -y python3-pip gcc git && \
+# Create an isolated virtualenv for Azure CLI so we don't touch the system Python
+RUN dnf install -y python3-pip && \
     dnf clean all && \
-    python3 -m pip install --upgrade pip && \
-    python3 -m pip install azure-cli
+    python3 -m venv /opt/azcli && \
+    /opt/azcli/bin/python -m pip install --upgrade pip && \
+    /opt/azcli/bin/python -m pip install azure-cli && \
+    ln -s /opt/azcli/bin/az /usr/local/bin/az
 
-# Back to awx/runner user
 USER 1000
