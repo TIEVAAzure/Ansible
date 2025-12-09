@@ -1,11 +1,8 @@
-# Use the SAME image as your Control Plane EE
 FROM quay.io/ansible/awx-ee:24.6.1
 
-# Become root to install packages
 USER 0
 
-# Install Azure CLI on RHEL/UBI-style base using microdnf
-RUN microdnf install -y curl ca-certificates gnupg && \
+RUN dnf install -y curl ca-certificates gnupg && \
     rpm --import https://packages.microsoft.com/keys/microsoft.asc && \
     echo "[azure-cli]" > /etc/yum.repos.d/azure-cli.repo && \
     echo "name=Azure CLI" >> /etc/yum.repos.d/azure-cli.repo && \
@@ -13,8 +10,7 @@ RUN microdnf install -y curl ca-certificates gnupg && \
     echo "enabled=1" >> /etc/yum.repos.d/azure-cli.repo && \
     echo "gpgcheck=1" >> /etc/yum.repos.d/azure-cli.repo && \
     echo "gpgkey=https://packages.microsoft.com/keys/microsoft.asc" >> /etc/yum.repos.d/azure-cli.repo && \
-    microdnf install -y azure-cli && \
-    microdnf clean all
+    dnf install -y azure-cli && \
+    dnf clean all
 
-# Drop back to the awx/runner user
 USER 1000
