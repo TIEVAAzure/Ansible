@@ -120,9 +120,11 @@
 
     # 5) Create Windows Server upgrade media disk via az CLI
     - name: Create Windows Server upgrade media disk via az CLI
-      ansible.builtin.command: "{{ az_disk_create_argv }}"
+      ansible.builtin.command:
+        argv: "{{ az_disk_create_argv }}"
       register: create_disk_cmd
       changed_when: "'Succeeded' in create_disk_cmd.stdout or 'provisioningState\"' in (create_disk_cmd.stdout | default(''))"
+
 
     - name: Show disk creation output
       ansible.builtin.debug:
