@@ -72,7 +72,7 @@
 
     - name: Fail if VM not found
       ansible.builtin.fail:
-        msg: "VM '{{ vm_name }}' not found in RG '{{ rg_name }}'."
+        msg: "VM '{{ vm_name }}' not found in resource group '{{ rg_name }}'."
       when: (vm_info.vms | default([])) | length == 0
 
     - name: Extract VM location, zone and data disk LUNs
@@ -94,29 +94,30 @@
           zone: {{ vm_zone | default('None (no-zone VM)') }}.
 
     # ------------------------------------------------------------
-    # 3) Create Windows Server upgrade disk (must match VM zone)
+    # 3) Create Windows Server upgrade media disk (zone-aware)
+    #    Using azure_rm_manageddisk (no Azure CLI needed)
     # ------------------------------------------------------------
-    - name: Build zone parameter for az CLI
-      ansible.builtin.set_fact:
-        zone_param: "{{ '--zone ' ~ vm_zone if vm_zone is not none else '' }}"
+    - name: Create Windows Server upgrade media disk (zone-aware, from WindowsServerUpgrade image)
+      azure.azcollection.azure_rm_manageddisk:
+        resource_group: "{{ rg_name }}"
+        name: "{{ upgrade_disk_name }}"
+        location: "{{ vm_location }}"
+        # Only set zone if VM actually has one
+        zone: "{{ vm_zone | default(omit) }}"
+        storage_account_type: "{{ upgrade_disk_sku }}"
+        # Create from image
+        create_option: fromimage
+        disk_size_gb: 64
+        image_reference:
+          publisher: "MicrosoftWindowsServer"
+          offer: "WindowsServerUpgrade"
+          sku: "{{ upgrade_sku }}"
+          version: "latest"
+      register: upgrade_disk
 
-    - name: Create Windows Server upgrade media disk (zone-aware)
-      ansible.builtin.command: >
-        az disk create
-        -g {{ rg_name }}
-        -n {{ upgrade_disk_name }}
-        -l {{ vm_location }}
-        {{ zone_param }}
-        --sku {{ upgrade_disk_sku }}
-        --image-reference
-        MicrosoftWindowsServer:WindowsServerUpgrade:{{ upgrade_sku }}:latest
-        -o json
-      register: create_disk_cmd
-      changed_when: "'Succeeded' in create_disk_cmd.stdout"
-
-    - name: Show disk creation output
+    - name: Show upgrade disk details
       ansible.builtin.debug:
-        var: create_disk_cmd.stdout
+        var: upgrade_disk
 
     # ------------------------------------------------------------
     # 4) Determine free LUN
