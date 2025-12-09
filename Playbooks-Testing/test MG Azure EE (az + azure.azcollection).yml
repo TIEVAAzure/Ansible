@@ -1,0 +1,26 @@
+---
+- name: Test MG Azure EE (az + azure.azcollection)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  collections:
+    - azure.azcollection
+
+  tasks:
+    - name: Show az CLI version
+      ansible.builtin.command: az --version
+      register: az_ver
+      changed_when: false
+
+    - name: Print az version output
+      ansible.builtin.debug:
+        var: az_ver.stdout_lines
+
+    - name: List resource groups
+      azure.azcollection.azure_rm_resourcegroup_info:
+      register: rg_info
+
+    - name: Show number of RGs
+      ansible.builtin.debug:
+        msg: "Found {{ rg_info.resourcegroups | length }} resource groups."
