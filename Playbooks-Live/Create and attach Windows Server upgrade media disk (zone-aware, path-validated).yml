@@ -62,14 +62,25 @@
     - name: Fail if VM not found
       ansible.builtin.fail:
         msg: "VM '{{ vm_name }}' not found in resource group '{{ rg_name }}'."
-      when: (vm_info.vms | default([])) | length == 0
+      when: >
+        ((vm_info.vms | default([])) | length == 0) and
+        ((vm_info.virtual_machines | default([])) | length == 0)
+
+    - name: Normalise VM object
+      ansible.builtin.set_fact:
+        vm_obj: >-
+          {{
+            (vm_info.vms | default([]) | first)
+            if (vm_info.vms | default([]) | length > 0)
+            else (vm_info.virtual_machines | default([]) | first)
+          }}
 
     - name: Extract VM location, zone and data disk LUNs
       ansible.builtin.set_fact:
-        vm_location: "{{ vm_info.vms[0].location }}"
-        vm_zones: "{{ vm_info.vms[0].zones | default([]) }}"
+        vm_location: "{{ vm_obj.location }}"
+        vm_zones: "{{ vm_obj.zones | default([]) }}"
         existing_luns: >-
-          {{ (vm_info.vms[0].storage_profile.data_disks | default([]))
+          {{ (vm_obj.storage_profile.data_disks | default([]))
              | map(attribute='lun') | list }}
 
     - name: Determine VM primary zone (if any)
@@ -82,30 +93,42 @@
           VM '{{ vm_name }}' is in '{{ vm_location }}',
           zone: {{ vm_zone | default('None (no-zone VM)') }}.
 
-    # 3) Build zone param for az
-    - name: Build zone parameter for az disk create
-  ansible.builtin.set_fact:
-    zone_param: "{{ '--zone ' ~ vm_zone if vm_zone is not none else '' }}"
+    # 3) Build zone arg list for az
+    - name: Build zone argument list for az disk create
+      ansible.builtin.set_fact:
+        zone_args: "{{ ['--zone', vm_zone] if (vm_zone is not none and (vm_zone | string | length) > 0) else [] }}"
 
-    # 4) Create Windows Server upgrade media disk via az CLI
+    # 4) Build full argv list for az disk create
+    - name: Build argv for az disk create
+      ansible.builtin.set_fact:
+        az_disk_create_argv: >-
+          {{
+            ['az', 'disk', 'create',
+             '-g', rg_name,
+             '-n', upgrade_disk_name,
+             '-l', vm_location]
+            + zone_args
+            + ['--sku', upgrade_disk_sku,
+               '--image-reference',
+               'MicrosoftWindowsServer:WindowsServerUpgrade:' ~ upgrade_sku ~ ':latest',
+               '-o', 'json']
+          }}
+
+    - name: Show az disk create argv
+      ansible.builtin.debug:
+        var: az_disk_create_argv
+
+    # 5) Create Windows Server upgrade media disk via az CLI
     - name: Create Windows Server upgrade media disk via az CLI
-  ansible.builtin.command: >
-    az disk create
-    -g {{ rg_name }}
-    -n {{ upgrade_disk_name }}
-    -l {{ vm_location }}
-    {% if vm_zone is not none %} --zone {{ vm_zone }} {% endif %}
-    --sku {{ upgrade_disk_sku }}
-    --image-reference MicrosoftWindowsServer:WindowsServerUpgrade:{{ upgrade_sku }}:latest
-    -o json
-  register: create_disk_cmd
-  changed_when: "'Succeeded' in create_disk_cmd.stdout or 'provisioningState\"' in create_disk_cmd.stdout"
+      ansible.builtin.command: "{{ az_disk_create_argv }}"
+      register: create_disk_cmd
+      changed_when: "'Succeeded' in create_disk_cmd.stdout or 'provisioningState\"' in (create_disk_cmd.stdout | default(''))"
 
     - name: Show disk creation output
       ansible.builtin.debug:
         var: create_disk_cmd.stdout
 
-    # 5) Choose free LUN
+    # 6) Choose free LUN
     - name: Choose next free LUN
       ansible.builtin.set_fact:
         upgrade_lun: "{{ (existing_luns | max + 1) if (existing_luns | length > 0) else 0 }}"
@@ -114,7 +137,7 @@
       ansible.builtin.debug:
         msg: "Upgrade disk will attach on LUN {{ upgrade_lun }}."
 
-    # 6) Attach upgrade disk
+    # 7) Attach upgrade disk
     - name: Attach upgrade disk to VM
       azure.azcollection.azure_rm_manageddisk:
         resource_group: "{{ rg_name }}"
