@@ -4,34 +4,22 @@
   connection: local
   gather_facts: no
 
-  # Auth comes from AWX Azure credential / env vars.
-  # Only functional parameters are defined here.
-
+  # rg_name and azure_vm_names will be overridden by the AWX survey.
   vars:
-    azure_resource_group: "rg-mg-learn-uksouth-001"
-    azure_vm_names:
-      - "vm-name-1"
-      - "vm-name-2"
+    rg_name: ""
+    azure_vm_names: ""   # Multi-line string from survey, one VM name per line
 
   tasks:
     - name: Reboot VM via Azure API (no guest access needed)
       azure.azcollection.azure_rm_virtualmachine:
-        resource_group: "{{ azure_resource_group }}"
+        resource_group: "{{ rg_name }}"
         name: "{{ item }}"
         restarted: yes
-      loop: "{{ azure_vm_names.splitlines() }}"
-      tags:
-        - reboot
-        - azure_reboot
-
-
-
-
-
-
-
-
-
+      loop: >-
+        {{ azure_vm_names.splitlines()
+           | map('trim')
+           | reject('equalto', '')
+           | list }}
 
 
 
