@@ -2,7 +2,7 @@ FROM quay.io/ansible/awx-ee:24.6.1
 
 USER 0
 
-RUN dnf install -y curl ca-certificates gnupg && \
+RUN dnf install -y ca-certificates gnupg && \
     rpm --import https://packages.microsoft.com/keys/microsoft.asc && \
     echo "[azure-cli]" > /etc/yum.repos.d/azure-cli.repo && \
     echo "name=Azure CLI" >> /etc/yum.repos.d/azure-cli.repo && \
