@@ -41,6 +41,40 @@
         - server2025Upgrade
 
   tasks:
+# 0) Log in to Azure CLI using the same SP as azure.azcollection
+    - name: Read Azure credential env vars
+      ansible.builtin.set_fact:
+        azure_client_id: "{{ lookup('env', 'AZURE_CLIENT_ID') }}"
+        azure_client_secret: "{{ lookup('env', 'AZURE_SECRET') }}"
+        azure_tenant_id: "{{ lookup('env', 'AZURE_TENANT') }}"
+        azure_subscription_id: "{{ lookup('env', 'AZURE_SUBSCRIPTION_ID') }}"
+
+    - name: Ensure Azure env vars are present
+      ansible.builtin.assert:
+        that:
+          - azure_client_id | length > 0
+          - azure_client_secret | length > 0
+          - azure_tenant_id | length > 0
+          - azure_subscription_id | length > 0
+        fail_msg: >
+          Missing one or more Azure env vars (AZURE_CLIENT_ID / AZURE_SECRET / AZURE_TENANT / AZURE_SUBSCRIPTION_ID).
+          Check your AWX Azure credential configuration.
+
+    - name: az login with service principal
+      ansible.builtin.command: >
+        az login
+        --service-principal
+        -u {{ azure_client_id }}
+        -p {{ azure_client_secret }}
+        --tenant {{ azure_tenant_id }}
+        --output none
+      no_log: true
+      changed_when: false
+
+    - name: Set az subscription
+      ansible.builtin.command: >
+        az account set --subscription {{ azure_subscription_id }}
+      changed_when: false
     # 1) Validate upgrade path
     - name: Validate requested upgrade path
       ansible.builtin.assert:
