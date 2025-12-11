@@ -4,7 +4,7 @@ metadata:
   name: letsencrypt-prod
 spec:
   acme:
-    email: mark.giles@tieva.dev   # change if needed
+    email: mark.giles@tieva.co.uk   # change if needed
     server: https://acme-v2.api.letsencrypt.org/directory
     privateKeySecretRef:
       name: letsencrypt-prod-key
