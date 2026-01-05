@@ -28,10 +28,10 @@
     # Keep this simple as well
     image_definition_name: "avd_win11ms_standard"
 
-    # Metadata (informational only)
-    image_publisher: "Cloud Ops TIEVA"
-    image_offer: "AVD-Standard"
-    image_sku: "win11-multisession"
+    # Metadata (informational only) - MUST match allowed characters
+    image_publisher: "CloudOpsTIEVA"      # no spaces
+    image_offer: "AVD-Standard"           # hyphen ok
+    image_sku: "win11-multisession"       # hyphen ok
 
     # Windows 11 = Gen2
     hyper_v_generation: "V2"
