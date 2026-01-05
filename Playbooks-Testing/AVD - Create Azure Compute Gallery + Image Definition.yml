@@ -1,44 +1,74 @@
 ---
-# Creates:
-# 1) Azure Compute Gallery (image library)
-# 2) Image Definition for standard AVD images (no M365 baked in)
+# -------------------------------------------------------------------
+# This playbook creates:
+#   1) An Azure Compute Gallery (formerly Shared Image Gallery)
+#   2) An Image Definition inside that gallery
+#
+# This is a ONE-TIME setup per image family.
+# Example image family:
+#   Windows 11 Enterprise multi-session (standard AVD image)
+#
+# Quarterly AIB builds will publish NEW IMAGE VERSIONS
+# into this image definition (e.g. 2026-Q1, 2026-Q2).
+# -------------------------------------------------------------------
 
 - name: Create Azure Compute Gallery + Image Definition (DEV)
   hosts: localhost
   connection: local
   gather_facts: false
+
+  # Use the Azure Ansible collection
   collections:
     - azure.azcollection
 
   vars:
-    # OPTIONAL if AWX credential is already scoped correctly
-    # Recommended to keep for clarity in multi-sub setups
+    # ---------------------------------------------------------------
+    # Azure subscription where the DEV resources live.
+    # Optional if AWX credential is already scoped correctly,
+    # but strongly recommended in multi-sub environments.
+    # ---------------------------------------------------------------
     subscription_id: "PUT-SUB-ID-HERE"
 
-    # Resource group holding the gallery
+    # ---------------------------------------------------------------
+    # Resource group to hold the gallery and image definition
+    # ---------------------------------------------------------------
     rg_name: "rg-mg-learn-uksouth-001"
 
-    # Azure region
+    # ---------------------------------------------------------------
+    # Azure region (should match AIB build region)
+    # ---------------------------------------------------------------
     location: "uksouth"
 
-    # Compute Gallery name (one per environment usually)
+    # ---------------------------------------------------------------
+    # Azure Compute Gallery name
+    # Think of this as the image library
+    # ---------------------------------------------------------------
     gallery_name: "acg-avd-dev"
 
-    # Image Definition = image family (quarterly versions go here)
+    # ---------------------------------------------------------------
+    # Image Definition name
+    # Think of this as the image "slot" that versions get published into
+    # ---------------------------------------------------------------
     image_definition_name: "avd-win11ms-standard"
 
-    # Metadata only (no technical impact)
-    image_publisher: "Cloud-Ops-TIEVA"
+    # ---------------------------------------------------------------
+    # Metadata for identifying the image family
+    # (Purely informational, no functional impact)
+    # ---------------------------------------------------------------
+    image_publisher: "Cloud Ops TIEVA"
     image_offer: "AVD-Standard"
     image_sku: "win11-multisession"
 
-    # Required for Windows 11
+    # ---------------------------------------------------------------
+    # Windows 11 requires Hyper-V Generation 2
+    # ---------------------------------------------------------------
     hyper_v_generation: "V2"
 
   tasks:
-    # ------------------------------------------------------------
-    # Create the Compute Gallery (image library)
-    # ------------------------------------------------------------
+    # ---------------------------------------------------------------
+    # TASK 1: Create the Azure Compute Gallery
+    # This is a container for image definitions and versions
+    # ---------------------------------------------------------------
     - name: Create Compute Gallery
       azure_rm_resource:
         subscription_id: "{{ subscription_id }}"
@@ -50,9 +80,10 @@
         body:
           location: "{{ location }}"
 
-    # ------------------------------------------------------------
-    # Create the Image Definition (image slot)
-    # ------------------------------------------------------------
+    # ---------------------------------------------------------------
+    # TASK 2: Create the Image Definition
+    # This defines the OS type, generation, and identifiers
+    # ---------------------------------------------------------------
     - name: Create Image Definition
       azure_rm_resource:
         subscription_id: "{{ subscription_id }}"
@@ -64,19 +95,26 @@
         body:
           location: "{{ location }}"
           properties:
+            # Windows image
             osType: "Windows"
+
+            # AIB outputs generalized images
             osState: "Generalized"
+
+            # Required for Windows 11
             hyperVGeneration: "{{ hyper_v_generation }}"
+
+            # Image identification metadata
             identifier:
               publisher: "{{ image_publisher }}"
               offer: "{{ image_offer }}"
               sku: "{{ image_sku }}"
 
-    # ------------------------------------------------------------
-    # Output IDs (used by AIB template later)
-    # ------------------------------------------------------------
-    - name: Output resource IDs
+    # ---------------------------------------------------------------
+    # TASK 3: Output information for confirmation / later steps
+    # ---------------------------------------------------------------
+    - name: Output gallery and image definition names
       ansible.builtin.debug:
         msg:
-          - "Gallery: {{ gallery_name }}"
-          - "Image Definition: {{ image_definition_name }}"
+          - "Compute Gallery created (or already exists): {{ gallery_name }}"
+          - "Image Definition created (or already exists): {{ image_definition_name }}"
