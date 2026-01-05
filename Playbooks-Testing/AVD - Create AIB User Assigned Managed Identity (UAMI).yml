@@ -76,23 +76,24 @@
         imgdef_scope: "/subscriptions/{{ subscription_id }}/resourceGroups/{{ gallery_rg_name }}/providers/Microsoft.Compute/galleries/{{ gallery_name }}/images/{{ image_definition_name }}"
 
     # ---------------------------------------------------------------
-    # TASK 4: Contributor on RG (simple + works for dev)
+    # TASK 4: Contributor on RG (AIB build permissions)
+    # Older azcollection requires assignee_object_id + role_definition_id
     # ---------------------------------------------------------------
     - name: RBAC - Contributor on RG for AIB build operations
       azure_rm_roleassignment:
         scope: "{{ rg_scope }}"
-        role_definition_name: "Contributor"
-        principal_id: "{{ uami_principal_id }}"
+        role_definition_id: "b24988ac-6180-42a0-ab88-20f7382dd24c"
+        assignee_object_id: "{{ uami_principal_id }}"
         state: present
 
     # ---------------------------------------------------------------
-    # TASK 5: Contributor on image definition (publish versions)
+    # TASK 5: Contributor on Image Definition (publish image versions)
     # ---------------------------------------------------------------
     - name: RBAC - Contributor on Image Definition
       azure_rm_roleassignment:
         scope: "{{ imgdef_scope }}"
-        role_definition_name: "Contributor"
-        principal_id: "{{ uami_principal_id }}"
+        role_definition_id: "b24988ac-6180-42a0-ab88-20f7382dd24c"
+        assignee_object_id: "{{ uami_principal_id }}"
         state: present
 
     # ---------------------------------------------------------------
