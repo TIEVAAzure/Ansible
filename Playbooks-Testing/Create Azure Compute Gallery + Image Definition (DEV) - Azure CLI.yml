@@ -1,0 +1,102 @@
+---
+# -------------------------------------------------------------------
+# STEP 1 (DEV): Create Azure Compute Gallery + Image Definition
+# Using Azure CLI to avoid azure.azcollection module bugs.
+#
+# Requirements:
+# - Azure CLI available in the Execution Environment
+# - AWX Azure credential authenticates (SPN/MI)
+# -------------------------------------------------------------------
+
+- name: Create Azure Compute Gallery + Image Definition (DEV) - Azure CLI
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    # Where to create the gallery
+    rg_name: "rg-mg-learn-uksouth-001"
+    location: "uksouth"
+
+    # IMPORTANT: Gallery name cannot contain dashes
+    gallery_name: "acg_avd_dev"
+
+    # Image definition name (keep simple)
+    image_definition_name: "avd_win11ms_standard"
+
+    # Metadata only
+    image_publisher: "Cloud Ops TIEVA"
+    image_offer: "AVD-Standard"
+    image_sku: "win11-multisession"
+
+    # Win11 requires Gen2
+    hyper_v_generation: "V2"
+
+  tasks:
+    # ---------------------------------------------------------------
+    # Show current Azure account context (proves we're in DEV)
+    # ---------------------------------------------------------------
+    - name: Show current Azure context
+      ansible.builtin.command: az account show -o table
+      changed_when: false
+
+    # ---------------------------------------------------------------
+    # Create gallery (idempotent-ish: will error if exists, so we check)
+    # ---------------------------------------------------------------
+    - name: Check if gallery exists
+      ansible.builtin.command: >
+        az sig show
+        --resource-group {{ rg_name }}
+        --gallery-name {{ gallery_name }}
+        -o none
+      register: gallery_check
+      changed_when: false
+      failed_when: false
+
+    - name: Create gallery if missing
+      ansible.builtin.command: >
+        az sig create
+        --resource-group {{ rg_name }}
+        --gallery-name {{ gallery_name }}
+        --location {{ location }}
+      when: gallery_check.rc != 0
+
+    # ---------------------------------------------------------------
+    # Create image definition (check first, then create if missing)
+    # ---------------------------------------------------------------
+    - name: Check if image definition exists
+      ansible.builtin.command: >
+        az sig image-definition show
+        --resource-group {{ rg_name }}
+        --gallery-name {{ gallery_name }}
+        --gallery-image-definition {{ image_definition_name }}
+        -o none
+      register: imgdef_check
+      changed_when: false
+      failed_when: false
+
+    - name: Create image definition if missing
+      ansible.builtin.command: >
+        az sig image-definition create
+        --resource-group {{ rg_name }}
+        --gallery-name {{ gallery_name }}
+        --gallery-image-definition {{ image_definition_name }}
+        --publisher "{{ image_publisher }}"
+        --offer "{{ image_offer }}"
+        --sku "{{ image_sku }}"
+        --os-type Windows
+        --os-state generalized
+        --hyper-v-generation {{ hyper_v_generation }}
+      when: imgdef_check.rc != 0
+
+    # ---------------------------------------------------------------
+    # Output (nice confirmation)
+    # ---------------------------------------------------------------
+    - name: Show created image definition
+      ansible.builtin.command: >
+        az sig image-definition show
+        --resource-group {{ rg_name }}
+        --gallery-name {{ gallery_name }}
+        --gallery-image-definition {{ image_definition_name }}
+        -o table
+      changed_when: false
