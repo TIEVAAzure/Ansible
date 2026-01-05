@@ -1,0 +1,92 @@
+---
+# -------------------------------------------------------------------
+# STEP 2 (DEV): Create AIB User Assigned Managed Identity (UAMI)
+# and assign RBAC so AIB can:
+# - create build resources
+# - publish image versions into the Compute Gallery
+#
+# Uses azcollection modules (no ARM, no az CLI).
+# -------------------------------------------------------------------
+
+- name: Create AIB Managed Identity + RBAC (DEV)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  collections:
+    - azure.azcollection
+
+  vars:
+    # Where to create the identity
+    rg_name: "rg-mg-learn-uksouth-001"
+    location: "uksouth"
+
+    # Identity name (no spaces; dashes ok for identities)
+    uami_name: "uami-aib-avd-dev"
+
+    # Your Compute Gallery details (created in Step 1)
+    gallery_name: "acg_avd_dev"
+    image_definition_name: "avd_win11ms_standard"
+
+    # Optional: if your gallery is in a different RG, set it here
+    gallery_rg_name: "{{ rg_name }}"
+
+  tasks:
+    # ---------------------------------------------------------------
+    # TASK 1: Create the User Assigned Managed Identity
+    # ---------------------------------------------------------------
+    - name: Create/Ensure UAMI exists
+      azure_rm_managedidentity:
+        resource_group: "{{ rg_name }}"
+        name: "{{ uami_name }}"
+        location: "{{ location }}"
+        state: present
+      register: uami
+
+    # ---------------------------------------------------------------
+    # TASK 2: Work out the scope IDs we need for role assignments
+    #
+    # AIB needs to:
+    #  - write image versions into the gallery image definition
+    #  - create resources in the RG used for build/staging (often same RG in dev)
+    #
+    # We'll assign:
+    #  - Contributor on the RG (for build resources)
+    #  - Contributor on the image definition scope (for publishing)
+    # ---------------------------------------------------------------
+
+    - name: Build scope IDs
+      ansible.builtin.set_fact:
+        rg_scope: "/subscriptions/{{ uami.subscription_id | default(lookup('ansible.builtin.env','AZURE_SUBSCRIPTION_ID')) }}/resourceGroups/{{ rg_name }}"
+        imgdef_scope: "/subscriptions/{{ uami.subscription_id | default(lookup('ansible.builtin.env','AZURE_SUBSCRIPTION_ID')) }}/resourceGroups/{{ gallery_rg_name }}/providers/Microsoft.Compute/galleries/{{ gallery_name }}/images/{{ image_definition_name }}"
+
+    # ---------------------------------------------------------------
+    # TASK 3: Assign Contributor on the Resource Group
+    # (Simple for dev; we can tighten later)
+    # ---------------------------------------------------------------
+    - name: RBAC - Contributor on RG for AIB build operations
+      azure_rm_roleassignment:
+        scope: "{{ rg_scope }}"
+        role_definition_name: "Contributor"
+        principal_id: "{{ uami.identity.principal_id }}"
+        state: present
+
+    # ---------------------------------------------------------------
+    # TASK 4: Assign Contributor on the image definition
+    # (Allows AIB to publish new image versions)
+    # ---------------------------------------------------------------
+    - name: RBAC - Contributor on Image Definition (publish versions)
+      azure_rm_roleassignment:
+        scope: "{{ imgdef_scope }}"
+        role_definition_name: "Contributor"
+        principal_id: "{{ uami.identity.principal_id }}"
+        state: present
+
+    # ---------------------------------------------------------------
+    # TASK 5: Output values we need for the next step (AIB template)
+    # ---------------------------------------------------------------
+    - name: Output UAMI IDs
+      ansible.builtin.debug:
+        msg:
+          - "UAMI name: {{ uami_name }}"
+          - "UAMI resource ID: {{ uami.state.id }}"
+          - "UAMI principal ID: {{ uami.identity.principal_id }}"
