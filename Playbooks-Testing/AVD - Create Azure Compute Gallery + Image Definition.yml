@@ -1,11 +1,10 @@
 ---
 # -------------------------------------------------------------------
-# This playbook creates:
+# Creates:
 #   1) Azure Compute Gallery (image library)
-#   2) Image Definition (image "slot" that versions get published into)
+#   2) Gallery Image Definition (image "slot" for versions)
 #
-# Run this ONCE per environment / image family.
-# Quarterly builds will publish versions into the image definition.
+# This is ONE-TIME setup in DEV.
 # -------------------------------------------------------------------
 
 - name: Create Azure Compute Gallery + Image Definition (DEV)
@@ -16,23 +15,20 @@
     - azure.azcollection
 
   vars:
-    # Optional if AWX is already scoped to the correct subscription,
-    # but good to keep in multi-sub environments.
+    # Subscription is optional if AWX creds are correctly scoped,
+    # but leaving it in is safer if you manage multiple subs.
     subscription_id: "PUT-SUB-ID-HERE"
 
-    # Resource group for the gallery
     rg_name: "rg-mg-learn-uksouth-001"
-
-    # Region
     location: "uksouth"
 
-    # Compute Gallery name (library)
-    gallery_name: "acg-avd-dev"
+    # IMPORTANT: Gallery name cannot include dashes
+    gallery_name: "acg_avd_dev"
 
-    # Image Definition name (versions publish here)
-    image_definition_name: "avd-win11ms-standard"
+    # Image definition name (keep simple)
+    image_definition_name: "avd_win11ms_standard"
 
-    # Metadata only (helps you identify images later)
+    # Metadata only (helps identify images later)
     image_publisher: "Cloud Ops TIEVA"
     image_offer: "AVD-Standard"
     image_sku: "win11-multisession"
@@ -43,48 +39,41 @@
   tasks:
     # ---------------------------------------------------------------
     # TASK 1: Create the Compute Gallery
-    # NOTE: provider must be 'Compute' (NOT 'Microsoft.Compute')
     # ---------------------------------------------------------------
-    - name: Create Compute Gallery
-      azure_rm_resource:
+    - name: Ensure Compute Gallery exists
+      azure_rm_gallery:
         subscription_id: "{{ subscription_id }}"
         resource_group: "{{ rg_name }}"
-        provider: "Compute"
-        resource_type: "galleries"
-        resource_name: "{{ gallery_name }}"
-        api_version: "2023-07-03"
-        body:
-          location: "{{ location }}"
+        name: "{{ gallery_name }}"
+        location: "{{ location }}"
+        state: present
 
     # ---------------------------------------------------------------
     # TASK 2: Create the Image Definition in the gallery
-    # NOTE: provider must be 'Compute' (NOT 'Microsoft.Compute')
-    # resource_type galleries/images = child resource under the gallery
+    # This is where AIB will publish versions
     # ---------------------------------------------------------------
-    - name: Create Image Definition
-      azure_rm_resource:
+    - name: Ensure Image Definition exists
+      azure_rm_galleryimage:
         subscription_id: "{{ subscription_id }}"
         resource_group: "{{ rg_name }}"
-        provider: "Compute"
-        resource_type: "galleries/images"
-        resource_name: "{{ gallery_name }}/{{ image_definition_name }}"
-        api_version: "2023-07-03"
-        body:
-          location: "{{ location }}"
-          properties:
-            osType: "Windows"
-            osState: "Generalized"
-            hyperVGeneration: "{{ hyper_v_generation }}"
-            identifier:
-              publisher: "{{ image_publisher }}"
-              offer: "{{ image_offer }}"
-              sku: "{{ image_sku }}"
+        gallery_name: "{{ gallery_name }}"
+        name: "{{ image_definition_name }}"
+        location: "{{ location }}"
+        os_type: Windows
+        os_state: generalized
+        hyper_v_generation: "{{ hyper_v_generation }}"
+        identifier:
+          publisher: "{{ image_publisher }}"
+          offer: "{{ image_offer }}"
+          sku: "{{ image_sku }}"
+        state: present
 
     # ---------------------------------------------------------------
     # TASK 3: Confirmation output
     # ---------------------------------------------------------------
-    - name: Output gallery and image definition names
+    - name: Output what was created
       ansible.builtin.debug:
         msg:
-          - "Compute Gallery created (or already exists): {{ gallery_name }}"
-          - "Image Definition created (or already exists): {{ image_definition_name }}"
+          - "Compute Gallery: {{ gallery_name }}"
+          - "Image Definition: {{ image_definition_name }}"
+          - "RG: {{ rg_name }} | Location: {{ location }}"
