@@ -1,13 +1,16 @@
 ---
 # -------------------------------------------------------------------
-# Creates:
-#   1) Azure Compute Gallery (image library)
-#   2) Gallery Image Definition (image "slot" for versions)
+# STEP 1 (DEV): Create Azure Compute Gallery + Image Definition
 #
-# This is ONE-TIME setup in DEV.
+# Why ARM deployment?
+# - Your Control Plane EE's azure_rm_gallery is throwing KeyError('description')
+# - azure_rm_resource has been awkward with nested types (galleries/images)
+# - azure_rm_deployment uses a native ARM template and is very reliable
+#
+# This playbook is SAFE to re-run (idempotent via ARM).
 # -------------------------------------------------------------------
 
-- name: Create Azure Compute Gallery + Image Definition (DEV)
+- name: Create Azure Compute Gallery + Image Definition (DEV) - ARM deployment
   hosts: localhost
   connection: local
   gather_facts: false
@@ -15,65 +18,106 @@
     - azure.azcollection
 
   vars:
-    # Subscription is optional if AWX creds are correctly scoped,
-    # but leaving it in is safer if you manage multiple subs.
-    subscription_id: "PUT-SUB-ID-HERE"
-
+    # Resource group where gallery + image definition will live
     rg_name: "rg-mg-learn-uksouth-001"
     location: "uksouth"
 
-    # IMPORTANT: Gallery name cannot include dashes
+    # IMPORTANT: Gallery name cannot contain dashes
     gallery_name: "acg_avd_dev"
 
-    # Image definition name (keep simple)
+    # Keep this simple as well
     image_definition_name: "avd_win11ms_standard"
 
-    # Metadata only (helps identify images later)
+    # Metadata (informational only)
     image_publisher: "Cloud Ops TIEVA"
     image_offer: "AVD-Standard"
     image_sku: "win11-multisession"
 
-    # Win11 requires Gen2
+    # Windows 11 = Gen2
     hyper_v_generation: "V2"
 
+    # Name of the ARM deployment (any friendly name)
+    deployment_name: "deploy-compute-gallery"
+
   tasks:
-    # ---------------------------------------------------------------
-    # TASK 1: Create the Compute Gallery
-    # ---------------------------------------------------------------
-    - name: Ensure Compute Gallery exists
-      azure_rm_gallery:
-        subscription_id: "{{ subscription_id }}"
+    # -------------------------------------------------------------------
+    # Deploy ARM template containing:
+    # - Microsoft.Compute/galleries
+    # - Microsoft.Compute/galleries/images
+    # -------------------------------------------------------------------
+    - name: Deploy gallery + image definition
+      azure_rm_deployment:
         resource_group: "{{ rg_name }}"
-        name: "{{ gallery_name }}"
         location: "{{ location }}"
+        name: "{{ deployment_name }}"
         state: present
+        template:
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#"
+          contentVersion: "1.0.0.0"
+          parameters:
+            location:
+              type: string
+            galleryName:
+              type: string
+            imageDefinitionName:
+              type: string
+            publisher:
+              type: string
+            offer:
+              type: string
+            sku:
+              type: string
+            hyperVGeneration:
+              type: string
+          resources:
+            # ----------------------------
+            # 1) Compute Gallery (library)
+            # ----------------------------
+            - type: "Microsoft.Compute/galleries"
+              apiVersion: "2023-07-03"
+              name: "[parameters('galleryName')]"
+              location: "[parameters('location')]"
+              properties: {}
 
-    # ---------------------------------------------------------------
-    # TASK 2: Create the Image Definition in the gallery
-    # This is where AIB will publish versions
-    # ---------------------------------------------------------------
-    - name: Ensure Image Definition exists
-      azure_rm_galleryimage:
-        subscription_id: "{{ subscription_id }}"
-        resource_group: "{{ rg_name }}"
-        gallery_name: "{{ gallery_name }}"
-        name: "{{ image_definition_name }}"
-        location: "{{ location }}"
-        os_type: Windows
-        os_state: generalized
-        hyper_v_generation: "{{ hyper_v_generation }}"
-        identifier:
-          publisher: "{{ image_publisher }}"
-          offer: "{{ image_offer }}"
-          sku: "{{ image_sku }}"
-        state: present
+            # ---------------------------------------
+            # 2) Image Definition (slot for versions)
+            # ---------------------------------------
+            - type: "Microsoft.Compute/galleries/images"
+              apiVersion: "2023-07-03"
+              name: "[format('{0}/{1}', parameters('galleryName'), parameters('imageDefinitionName'))]"
+              location: "[parameters('location')]"
+              dependsOn:
+                - "[resourceId('Microsoft.Compute/galleries', parameters('galleryName'))]"
+              properties:
+                osType: "Windows"
+                osState: "Generalized"
+                hyperVGeneration: "[parameters('hyperVGeneration')]"
+                identifier:
+                  publisher: "[parameters('publisher')]"
+                  offer: "[parameters('offer')]"
+                  sku: "[parameters('sku')]"
+        parameters:
+          location:
+            value: "{{ location }}"
+          galleryName:
+            value: "{{ gallery_name }}"
+          imageDefinitionName:
+            value: "{{ image_definition_name }}"
+          publisher:
+            value: "{{ image_publisher }}"
+          offer:
+            value: "{{ image_offer }}"
+          sku:
+            value: "{{ image_sku }}"
+          hyperVGeneration:
+            value: "{{ hyper_v_generation }}"
 
-    # ---------------------------------------------------------------
-    # TASK 3: Confirmation output
-    # ---------------------------------------------------------------
-    - name: Output what was created
+    # -------------------------------------------------------------------
+    # Friendly output
+    # -------------------------------------------------------------------
+    - name: Output result
       ansible.builtin.debug:
         msg:
-          - "Compute Gallery: {{ gallery_name }}"
-          - "Image Definition: {{ image_definition_name }}"
+          - "Compute Gallery ensured: {{ gallery_name }}"
+          - "Image Definition ensured: {{ image_definition_name }}"
           - "RG: {{ rg_name }} | Location: {{ location }}"
