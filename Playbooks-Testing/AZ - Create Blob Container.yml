@@ -1,0 +1,20 @@
+---
+- name: Ensure blob container exists for AIB scripts
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  collections:
+    - azure.azcollection
+
+  vars:
+    rg_name: "YOUR-RG-NAME"
+    sa_name: "YOURSTORAGEACCOUNTNAME"
+    container_name: "aib-scripts"
+
+  tasks:
+    - name: Create blob container if not present
+      azure_rm_storageblob:
+        resource_group: "{{ rg_name }}"
+        storage_account_name: "{{ sa_name }}"
+        container: "{{ container_name }}"
+        state: present
