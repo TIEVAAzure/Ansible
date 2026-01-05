@@ -1,0 +1,82 @@
+---
+# Creates:
+# 1) Azure Compute Gallery (image library)
+# 2) Image Definition for standard AVD images (no M365 baked in)
+
+- name: Create Azure Compute Gallery + Image Definition (DEV)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  collections:
+    - azure.azcollection
+
+  vars:
+    # OPTIONAL if AWX credential is already scoped correctly
+    # Recommended to keep for clarity in multi-sub setups
+    subscription_id: "PUT-SUB-ID-HERE"
+
+    # Resource group holding the gallery
+    rg_name: "rg-mg-learn-uksouth-001"
+
+    # Azure region
+    location: "uksouth"
+
+    # Compute Gallery name (one per environment usually)
+    gallery_name: "acg-avd-dev"
+
+    # Image Definition = image family (quarterly versions go here)
+    image_definition_name: "avd-win11ms-standard"
+
+    # Metadata only (no technical impact)
+    image_publisher: "Cloud-Ops-TIEVA"
+    image_offer: "AVD-Standard"
+    image_sku: "win11-multisession"
+
+    # Required for Windows 11
+    hyper_v_generation: "V2"
+
+  tasks:
+    # ------------------------------------------------------------
+    # Create the Compute Gallery (image library)
+    # ------------------------------------------------------------
+    - name: Create Compute Gallery
+      azure_rm_resource:
+        subscription_id: "{{ subscription_id }}"
+        resource_group: "{{ rg_name }}"
+        provider: "Microsoft.Compute"
+        resource_type: "galleries"
+        resource_name: "{{ gallery_name }}"
+        api_version: "2023-07-03"
+        body:
+          location: "{{ location }}"
+
+    # ------------------------------------------------------------
+    # Create the Image Definition (image slot)
+    # ------------------------------------------------------------
+    - name: Create Image Definition
+      azure_rm_resource:
+        subscription_id: "{{ subscription_id }}"
+        resource_group: "{{ rg_name }}"
+        provider: "Microsoft.Compute"
+        resource_type: "galleries/images"
+        resource_name: "{{ gallery_name }}/{{ image_definition_name }}"
+        api_version: "2023-07-03"
+        body:
+          location: "{{ location }}"
+          properties:
+            osType: "Windows"
+            osState: "Generalized"
+            hyperVGeneration: "{{ hyper_v_generation }}"
+            identifier:
+              publisher: "{{ image_publisher }}"
+              offer: "{{ image_offer }}"
+              sku: "{{ image_sku }}"
+
+    # ------------------------------------------------------------
+    # Output IDs (used by AIB template later)
+    # ------------------------------------------------------------
+    - name: Output resource IDs
+      ansible.builtin.debug:
+        msg:
+          - "Gallery: {{ gallery_name }}"
+          - "Image Definition: {{ image_definition_name }}"
