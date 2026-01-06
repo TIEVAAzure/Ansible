@@ -19,6 +19,7 @@
     - name: Generate container SAS (read+list)
       ansible.builtin.command: >
         az storage container generate-sas
+        --auth-mode login
         --account-name {{ sa_name }}
         --name {{ container_name }}
         --permissions rl
