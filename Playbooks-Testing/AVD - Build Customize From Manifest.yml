@@ -17,11 +17,11 @@
       var: ls_pt.stdout_lines
 
   - name: AIB - Build customize array from manifest (preview)
-  hosts: localhost
-  connection: local
-  gather_facts: false
-  collections:
-    - azure.azcollection
+    hosts: localhost
+    connection: local
+    gather_facts: false
+    collections:
+      - azure.azcollection
 
   vars:
     # inputs via AWX survey
