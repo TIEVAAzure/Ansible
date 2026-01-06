@@ -28,10 +28,21 @@
         api_version: "2023-01-01"
       register: sa_info
 
-    - name: Extract primary key
-      ansible.builtin.set_fact:
-        sa_key: "{{ sa_info.response[0].properties.keys[0].value }}"
-      no_log: true
+    - name: Debug storage account info keys (SAFE - no secrets)
+      ansible.builtin.debug:
+        msg:
+          - "sa_info.response length = {{ sa_info.response | length }}"
+          - "sa_info.response[0] keys = {{ (sa_info.response[0] | default({})).keys() | list }}"
+          - "Has properties? {{ (sa_info.response[0] | default({})).properties is defined }}"
+          - "properties keys = {{ ((sa_info.response[0] | default({})).properties | default({})).keys() | list }}"
+      changed_when: false
+
+    - name: Debug candidate key paths (SAFE)
+      ansible.builtin.debug:
+        msg:
+          - "properties.keys defined? {{ sa_info.response[0].properties.keys is defined if (sa_info.response|length>0 and sa_info.response[0].properties is defined) else 'n/a' }}"
+          - "keys count: {{ sa_info.response[0].properties.keys|length if (sa_info.response|length>0 and sa_info.response[0].properties is defined and sa_info.response[0].properties.keys is defined) else 'n/a' }}"
+      changed_when: false
 
     - name: Generate container SAS (read+list) using account key
       ansible.builtin.command: >
