@@ -22,10 +22,33 @@ ms_builtins:
     name: DisableStorageSense
     scriptUri: https://raw.githubusercontent.com/Azure/RDS-Templates/master/CustomImageTemplateScripts/CustomImageTemplateScripts_2024-03-27/DisableStorageSense.ps1
 
-  install_fslogix:
-    type: PowerShell
-    name: InstallFSLogix
-    scriptUri: https://raw.githubusercontent.com/Azure/RDS-Templates/master/CustomImageTemplateScripts/CustomImageTemplateScripts_2024-03-27/FSLogix.ps1
+install_fslogix:
+  type: PowerShell
+  name: InstallFSLogix
+  inline: |
+    $ErrorActionPreference = "Stop"
+
+    $uri  = "https://raw.githubusercontent.com/Azure/RDS-Templates/master/CustomImageTemplateScripts/CustomImageTemplateScripts_2024-03-27/FSLogix.ps1"
+    $dest = "$env:TEMP\FSLogix.ps1"
+
+    Invoke-WebRequest -Uri $uri -OutFile $dest -UseBasicParsing
+
+    $params = @{}
+
+    if ("{{ manifest.fslogix_settings.profile_path | default('') }}" -ne "") {
+      $params["ProfilePath"] = "{{ manifest.fslogix_settings.profile_path }}"
+    }
+
+    if ("{{ manifest.fslogix_settings.vhd_size_mb | default('') }}" -ne "") {
+      $params["VHDSize"] = {{ manifest.fslogix_settings.vhd_size_mb }}
+    }
+
+    if ($params.Count -gt 0) {
+      & powershell.exe -ExecutionPolicy Bypass -File $dest @params
+    }
+    else {
+      & powershell.exe -ExecutionPolicy Bypass -File $dest
+    }
 
   configure_rdp_shortpath:
     type: PowerShell

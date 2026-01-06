@@ -210,6 +210,8 @@
         - manifest.microsoft_builtins.must is defined
         - (manifest.microsoft_builtins.must[item] | bool) == true
         - ms_map.ms_builtins[item] is defined
+        - item != 'apply_windows_updates'
+
 
     - name: Add Microsoft optional built-ins
       ansible.builtin.set_fact:
