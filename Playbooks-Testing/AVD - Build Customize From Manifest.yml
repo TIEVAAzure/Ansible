@@ -1,36 +1,27 @@
 ---
-  - name: Show project root contents (diagnostic)
-    ansible.builtin.command: ls -l
-    register: ls_root
-    changed_when: false
-
-  - ansible.builtin.debug:
-      var: ls_root.stdout_lines
-
-  - name: Show Playbook-Templates folder (diagnostic)
-    ansible.builtin.command: ls -l Playbook-Templates
-    register: ls_pt
-    changed_when: false
-    ignore_errors: true
-
-  - ansible.builtin.debug:
-      var: ls_pt.stdout_lines
-
-  - name: AIB - Build customize array from manifest (preview)
-    hosts: localhost
-    connection: local
-    gather_facts: false
-    collections:
-      - azure.azcollection
+- name: AIB - Build customize array from manifest (preview)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  collections:
+    - azure.azcollection
 
   vars:
     # inputs via AWX survey
     rg_name: "{{ rg_name }}"
     sa_name: "{{ sa_name }}"
     container_name: "{{ container_name }}"
+
+    # You can pass either:
+    # - a full repo-relative path e.g. Playbook-Templates/AIB-Build-Manifests/IMS/ims-avd-win11-2026-q1.yml
+    # - OR just the filename e.g. ims-avd-win11-2026-q1.yml
     manifest_path: "{{ manifest_path }}"
     ms_builtins_map_path: "{{ ms_builtins_map_path }}"
+
     sas_valid_hours: 24
+
+    # Where AWX checks out the repo
+    project_dir: "{{ lookup('env', 'AWX_PROJECT_DIR') | default('/runner/project', true) }}"
 
     # AIB common flags
     ps_defaults:
@@ -47,24 +38,118 @@
         - "exclude:$_.Title -like '*Beta*'"
 
   tasks:
-    - name: List manifest directory contents (diagnostic)
-      ansible.builtin.command: >
-        ls -l Playbook-Templates/AIB-Build-Manifests/IMS
-      register: ls_manifest
+    # ----------------------------
+    # Normalize incoming survey paths (handle Windows \)
+    # ----------------------------
+    - name: Normalize survey paths (convert backslashes to forward slashes)
+      ansible.builtin.set_fact:
+        manifest_path_norm: "{{ manifest_path | replace('\\\\', '/') }}"
+        builtins_path_norm: "{{ ms_builtins_map_path | replace('\\\\', '/') }}"
       changed_when: false
-      ignore_errors: true
 
-    - debug:
-        var: ls_manifest.stdout_lines
+    # ----------------------------
+    # Resolve manifest path
+    # ----------------------------
+    - name: Check manifest path as provided (repo-relative)
+      ansible.builtin.stat:
+        path: "{{ project_dir }}/{{ manifest_path_norm }}"
+      register: st_manifest
+      changed_when: false
 
+    - name: Find manifest by filename if path not found
+      ansible.builtin.find:
+        paths: "{{ project_dir }}"
+        patterns: "{{ manifest_path_norm | basename }}"
+        file_type: file
+        recurse: true
+      register: find_manifest
+      when: not st_manifest.stat.exists
+      changed_when: false
+
+    - name: Set resolved manifest path
+      ansible.builtin.set_fact:
+        manifest_resolved_path: >-
+          {{
+            (project_dir ~ '/' ~ manifest_path_norm)
+            if st_manifest.stat.exists
+            else
+            (find_manifest.files[0].path if (find_manifest is defined and (find_manifest.matched | int) > 0) else '')
+          }}
+      changed_when: false
+
+    - name: Fail if manifest still not found
+      ansible.builtin.fail:
+        msg: >-
+          Manifest file not found.
+          Tried: {{ project_dir }}/{{ manifest_path_norm }}
+          Also searched for filename: {{ manifest_path_norm | basename }} under {{ project_dir }}.
+          Fix: commit/push the manifest into the repo and ensure the AWX Project is synced.
+      when: manifest_resolved_path | length == 0
+
+    # ----------------------------
+    # Resolve built-ins mapping path
+    # ----------------------------
+    - name: Check built-ins map path as provided (repo-relative)
+      ansible.builtin.stat:
+        path: "{{ project_dir }}/{{ builtins_path_norm }}"
+      register: st_builtins
+      changed_when: false
+
+    - name: Find built-ins map by filename if path not found
+      ansible.builtin.find:
+        paths: "{{ project_dir }}"
+        patterns: "{{ builtins_path_norm | basename }}"
+        file_type: file
+        recurse: true
+      register: find_builtins
+      when: not st_builtins.stat.exists
+      changed_when: false
+
+    - name: Set resolved built-ins map path
+      ansible.builtin.set_fact:
+        builtins_resolved_path: >-
+          {{
+            (project_dir ~ '/' ~ builtins_path_norm)
+            if st_builtins.stat.exists
+            else
+            (find_builtins.files[0].path if (find_builtins is defined and (find_builtins.matched | int) > 0) else '')
+          }}
+      changed_when: false
+
+    - name: Fail if built-ins map still not found
+      ansible.builtin.fail:
+        msg: >-
+          Built-ins mapping file not found.
+          Tried: {{ project_dir }}/{{ builtins_path_norm }}
+          Also searched for filename: {{ builtins_path_norm | basename }} under {{ project_dir }}.
+          Fix: commit/push the builtins file into the repo and ensure the AWX Project is synced.
+      when: builtins_resolved_path | length == 0
+
+    # ----------------------------
+    # Show what we resolved (SAFE)
+    # ----------------------------
+    - name: Debug resolved files (SAFE)
+      ansible.builtin.debug:
+        msg:
+          - "Project dir: {{ project_dir }}"
+          - "Manifest resolved path: {{ manifest_resolved_path }}"
+          - "Builtins resolved path: {{ builtins_resolved_path }}"
+      changed_when: false
+
+    # ----------------------------
+    # Load YAML files
+    # ----------------------------
     - name: Load manifest YAML
       ansible.builtin.set_fact:
-        manifest: "{{ lookup('ansible.builtin.file', manifest_path) | from_yaml }}"
+        manifest: "{{ lookup('ansible.builtin.file', manifest_resolved_path) | from_yaml }}"
 
     - name: Load Microsoft built-ins mapping YAML
       ansible.builtin.set_fact:
-        ms_map: "{{ lookup('ansible.builtin.file', ms_builtins_map_path) | from_yaml }}"
+        ms_map: "{{ lookup('ansible.builtin.file', builtins_resolved_path) | from_yaml }}"
 
+    # ----------------------------
+    # Generate container SAS (same method as your working SAS playbook)
+    # ----------------------------
     - name: Compute SAS expiry (UTC)
       ansible.builtin.command: >
         date -u -d "+{{ sas_valid_hours }} hours" +"%Y-%m-%dT%H:%MZ"
@@ -109,7 +194,7 @@
       changed_when: false
 
     # ----------------------------
-    # Build Microsoft built-ins list
+    # Build customize list
     # ----------------------------
     - name: Start customize list
       ansible.builtin.set_fact:
@@ -118,12 +203,7 @@
 
     - name: Add Microsoft must built-ins
       ansible.builtin.set_fact:
-        customize: >-
-          {{
-            customize + [
-              (ms_map.ms_builtins[item] | combine(ps_defaults, recursive=true))
-            ]
-          }}
+        customize: "{{ customize + [ (ms_map.ms_builtins[item] | combine(ps_defaults, recursive=true)) ] }}"
       loop: "{{ (manifest.microsoft_builtins.must | default({})).keys() | list }}"
       when:
         - manifest.microsoft_builtins is defined
@@ -133,12 +213,7 @@
 
     - name: Add Microsoft optional built-ins
       ansible.builtin.set_fact:
-        customize: >-
-          {{
-            customize + [
-              (ms_map.ms_builtins[item] | combine(ps_defaults, recursive=true))
-            ]
-          }}
+        customize: "{{ customize + [ (ms_map.ms_builtins[item] | combine(ps_defaults, recursive=true)) ] }}"
       loop: "{{ (manifest.microsoft_builtins.optional | default({})).keys() | list }}"
       when:
         - manifest.microsoft_builtins is defined
@@ -154,10 +229,7 @@
         - manifest.microsoft_builtins.must is defined
         - (manifest.microsoft_builtins.must.apply_windows_updates | default(false) | bool) == true
 
-    # ----------------------------
-    # Add your custom scripts (blob + SAS)
-    # ----------------------------
-    - name: Add custom scripts from manifest (ordered)
+    - name: Add custom scripts from manifest (ordered) - adds SAS (hidden)
       ansible.builtin.set_fact:
         customize: >-
           {{
@@ -173,7 +245,7 @@
           }}
       loop: "{{ manifest.custom_scripts | default([]) }}"
       when: item.blob_path is defined
-      no_log: true  # hides SAS in logs
+      no_log: true
 
     # ----------------------------
     # Output preview (safe)
