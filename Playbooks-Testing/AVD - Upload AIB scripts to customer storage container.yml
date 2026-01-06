@@ -26,7 +26,7 @@
 
   tasks:
     - name: Debug repo paths (temporary)
-    ansible.builtin.debug:
+      ansible.builtin.debug:
       msg:
         - "playbook_dir={{ playbook_dir }}"
         - "repo_root={{ repo_root }}"
