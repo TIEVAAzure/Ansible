@@ -43,10 +43,17 @@
           - "Has response.properties? {{ (sa_keys.response.properties is defined) | default(false) }}"
       changed_when: false
 
+    - name: Debug first key object shape (SAFE - no secrets)
+      ansible.builtin.debug:
+        msg:
+          - "keys count = {{ sa_keys.response.keys | length }}"
+          - "first key object keys = {{ sa_keys.response.keys[0].keys() | list }}"
+      changed_when: false
+
     - name: Extract primary key
       ansible.builtin.set_fact:
         sa_key: "{{ sa_keys.response.keys[0].value }}"
-      no_log: true
+      no_log: false
 
     - name: Fail if sa_key could not be extracted
       ansible.builtin.fail:
