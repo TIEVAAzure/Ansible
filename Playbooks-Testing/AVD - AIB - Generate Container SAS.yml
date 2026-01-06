@@ -3,8 +3,11 @@
   hosts: localhost
   connection: local
   gather_facts: false
+  collections:
+    - azure.azcollection
 
   vars:
+    rg_name: "{{ rg_name }}"
     sa_name: "{{ sa_name }}"
     container_name: "{{ container_name }}"
     sas_valid_hours: 24
@@ -16,11 +19,25 @@
       register: sas_expiry
       changed_when: false
 
-    - name: Generate container SAS (read+list)
+    - name: Get storage account keys (ARM)
+      azure_rm_resource_info:
+        resource_group: "{{ rg_name }}"
+        provider: Storage
+        resource_type: storageAccounts
+        resource_name: "{{ sa_name }}"
+        api_version: "2023-01-01"
+      register: sa_info
+
+    - name: Extract primary key
+      ansible.builtin.set_fact:
+        sa_key: "{{ sa_info.response[0].properties.keys[0].value }}"
+      no_log: true
+
+    - name: Generate container SAS (read+list) using account key
       ansible.builtin.command: >
         az storage container generate-sas
-        --auth-mode login
         --account-name {{ sa_name }}
+        --account-key {{ sa_key }}
         --name {{ container_name }}
         --permissions rl
         --expiry {{ sas_expiry.stdout }}
@@ -28,7 +45,7 @@
         -o tsv
       register: container_sas
       changed_when: false
-      no_log: false
+      no_log: true
 
     - name: Show SAS expiry only (safe)
       ansible.builtin.debug:
