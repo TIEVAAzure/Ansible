@@ -16,7 +16,7 @@
     blob_prefix: "{{ image_version }}"
 
     # Repo root (adjust if your playbook lives elsewhere)
-    repo_root: "{{ playbook_dir }}/../.."
+    repo_root: "{{ lookup('env','AWX_PROJECT_DIR') | default(playbook_dir ~ '/..', true) | realpath }}"
 
     # Candidate folders (some may not exist for some customers)
     candidate_dirs:
@@ -25,6 +25,13 @@
       - "{{ repo_root }}/AVD-Scripts/Customer/{{ customer }}"
 
   tasks:
+    - name: Debug repo paths (temporary)
+    ansible.builtin.debug:
+      msg:
+        - "playbook_dir={{ playbook_dir }}"
+        - "repo_root={{ repo_root }}"
+        - "candidate_dirs={{ candidate_dirs }}"
+
     - name: Check which candidate folders exist
       ansible.builtin.stat:
         path: "{{ item }}"
