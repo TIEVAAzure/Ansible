@@ -1,0 +1,166 @@
+---
+- name: AIB - Build customize array from manifest (preview)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  collections:
+    - azure.azcollection
+
+  vars:
+    # inputs via AWX survey
+    rg_name: "{{ rg_name }}"
+    sa_name: "{{ sa_name }}"
+    container_name: "{{ container_name }}"
+    manifest_path: "{{ manifest_path }}"
+    ms_builtins_map_path: "{{ ms_builtins_map_path }}"
+    sas_valid_hours: 24
+
+    # AIB common flags
+    ps_defaults:
+      runAsSystem: true
+      runElevated: true
+
+    # Windows Update customizer defaults (tune later)
+    windows_update_customizer:
+      type: WindowsUpdate
+      name: ApplyWindowsUpdates
+      searchCriteria: "IsInstalled=0"
+      filters:
+        - "exclude:$_.Title -like '*Preview*'"
+        - "exclude:$_.Title -like '*Beta*'"
+
+  tasks:
+    - name: Load manifest YAML
+      ansible.builtin.set_fact:
+        manifest: "{{ lookup('ansible.builtin.file', manifest_path) | from_yaml }}"
+
+    - name: Load Microsoft built-ins mapping YAML
+      ansible.builtin.set_fact:
+        ms_map: "{{ lookup('ansible.builtin.file', ms_builtins_map_path) | from_yaml }}"
+
+    - name: Compute SAS expiry (UTC)
+      ansible.builtin.command: >
+        date -u -d "+{{ sas_valid_hours }} hours" +"%Y-%m-%dT%H:%MZ"
+      register: sas_expiry
+      changed_when: false
+
+    - name: List storage account keys (ARM action)
+      azure.azcollection.azure_rm_resource:
+        api_version: "2023-01-01"
+        method: POST
+        resource_group: "{{ rg_name }}"
+        provider: Storage
+        resource_type: storageAccounts
+        resource_name: "{{ sa_name }}"
+        subresource:
+          - type: listKeys
+      register: sa_keys
+      changed_when: false
+
+    - name: Extract primary key (safe)
+      ansible.builtin.set_fact:
+        sa_key: "{{ sa_keys.response['keys'][0]['value'] }}"
+      no_log: true
+
+    - name: Generate container SAS (read+list) using account key
+      ansible.builtin.command: >
+        az storage container generate-sas
+        --account-name {{ sa_name }}
+        --account-key {{ sa_key }}
+        --name {{ container_name }}
+        --permissions rl
+        --expiry {{ sas_expiry.stdout }}
+        --https-only
+        -o tsv
+      register: container_sas
+      changed_when: false
+      no_log: true
+
+    - name: Build scripts base URL
+      ansible.builtin.set_fact:
+        scripts_base_url: "https://{{ sa_name }}.blob.core.windows.net/{{ container_name }}/{{ manifest.image_version }}"
+      changed_when: false
+
+    # ----------------------------
+    # Build Microsoft built-ins list
+    # ----------------------------
+    - name: Start customize list
+      ansible.builtin.set_fact:
+        customize: []
+      changed_when: false
+
+    - name: Add Microsoft must built-ins
+      ansible.builtin.set_fact:
+        customize: >-
+          {{
+            customize + [
+              (ms_map.ms_builtins[item] | combine(ps_defaults, recursive=true))
+            ]
+          }}
+      loop: "{{ (manifest.microsoft_builtins.must | default({})).keys() | list }}"
+      when:
+        - manifest.microsoft_builtins is defined
+        - manifest.microsoft_builtins.must is defined
+        - (manifest.microsoft_builtins.must[item] | bool) == true
+        - ms_map.ms_builtins[item] is defined
+
+    - name: Add Microsoft optional built-ins
+      ansible.builtin.set_fact:
+        customize: >-
+          {{
+            customize + [
+              (ms_map.ms_builtins[item] | combine(ps_defaults, recursive=true))
+            ]
+          }}
+      loop: "{{ (manifest.microsoft_builtins.optional | default({})).keys() | list }}"
+      when:
+        - manifest.microsoft_builtins is defined
+        - manifest.microsoft_builtins.optional is defined
+        - (manifest.microsoft_builtins.optional[item] | bool) == true
+        - ms_map.ms_builtins[item] is defined
+
+    - name: Add Windows Updates customizer if enabled in manifest
+      ansible.builtin.set_fact:
+        customize: "{{ customize + [ windows_update_customizer ] }}"
+      when:
+        - manifest.microsoft_builtins is defined
+        - manifest.microsoft_builtins.must is defined
+        - (manifest.microsoft_builtins.must.apply_windows_updates | default(false) | bool) == true
+
+    # ----------------------------
+    # Add your custom scripts (blob + SAS)
+    # ----------------------------
+    - name: Add custom scripts from manifest (ordered)
+      ansible.builtin.set_fact:
+        customize: >-
+          {{
+            customize + [
+              {
+                'type': 'PowerShell',
+                'name': (item.name | regex_replace('[^A-Za-z0-9\\-]', '-') ),
+                'scriptUri': (scripts_base_url ~ '/' ~ item.blob_path ~ '?' ~ container_sas.stdout),
+                'runAsSystem': true,
+                'runElevated': true
+              }
+            ]
+          }}
+      loop: "{{ manifest.custom_scripts | default([]) }}"
+      when: item.blob_path is defined
+      no_log: true  # hides SAS in logs
+
+    # ----------------------------
+    # Output preview (safe)
+    # ----------------------------
+    - name: Preview customize list (safe - no SAS)
+      ansible.builtin.debug:
+        msg:
+          - "Customize steps count: {{ customize | length }}"
+          - "Step names (order): {{ customize | map(attribute='name') | list }}"
+      changed_when: false
+
+    - name: Write customize JSON to /tmp for inspection (runner)
+      ansible.builtin.copy:
+        dest: "/tmp/aib-customize-{{ manifest.customer | lower }}-{{ manifest.image_version }}.json"
+        content: "{{ customize | to_nice_json }}"
+      changed_when: false
+      no_log: true

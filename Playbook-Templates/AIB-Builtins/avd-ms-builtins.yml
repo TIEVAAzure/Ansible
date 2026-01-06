@@ -1,0 +1,59 @@
+---
+ms_builtins:
+  # Optional
+  install_languages:
+    type: PowerShell
+    name: InstallLanguages
+    scriptUri: https://raw.githubusercontent.com/Azure/RDS-Templates/master/CustomImageTemplateScripts/CustomImageTemplateScripts_2024-03-27/InstallLanguagePacks.ps1
+
+  # Must
+  set_default_os_language:
+    type: PowerShell
+    name: SetDefaultOSLanguage
+    scriptUri: https://raw.githubusercontent.com/Azure/RDS-Templates/master/CustomImageTemplateScripts/CustomImageTemplateScripts_2024-03-27/SetDefaultLang.ps1
+
+  time_zone_redirection:
+    type: PowerShell
+    name: TimeZoneRedirection
+    scriptUri: https://raw.githubusercontent.com/Azure/RDS-Templates/master/CustomImageTemplateScripts/CustomImageTemplateScripts_2024-03-27/TimezoneRedirection.ps1
+
+  disable_storage_sense:
+    type: PowerShell
+    name: DisableStorageSense
+    scriptUri: https://raw.githubusercontent.com/Azure/RDS-Templates/master/CustomImageTemplateScripts/CustomImageTemplateScripts_2024-03-27/DisableStorageSense.ps1
+
+  install_fslogix:
+    type: PowerShell
+    name: InstallFSLogix
+    scriptUri: https://raw.githubusercontent.com/Azure/RDS-Templates/master/CustomImageTemplateScripts/CustomImageTemplateScripts_2024-03-27/FSLogix.ps1
+
+  configure_rdp_shortpath:
+    type: PowerShell
+    name: ConfigureRDPShortpath
+    scriptUri: https://raw.githubusercontent.com/Azure/RDS-Templates/master/CustomImageTemplateScripts/CustomImageTemplateScripts_2024-03-27/RDPShortpath.ps1
+
+  install_multimedia_redirection:
+    type: PowerShell
+    name: InstallMultimediaRedirection
+    scriptUri: https://raw.githubusercontent.com/Azure/RDS-Templates/master/CustomImageTemplateScripts/CustomImageTemplateScripts_2024-03-27/MultiMediaRedirection.ps1
+
+  remove_microsoft_office_applications:
+    type: PowerShell
+    name: RemoveOfficeApps
+    scriptUri: https://raw.githubusercontent.com/Azure/RDS-Templates/master/CustomImageTemplateScripts/CustomImageTemplateScripts_2024-03-27/ConfigureOfficeApps.ps1
+
+  configure_windows_optimizations:
+    type: PowerShell
+    name: ConfigureWindowsOptimizations
+    scriptUri: https://raw.githubusercontent.com/Azure/RDS-Templates/master/CustomImageTemplateScripts/CustomImageTemplateScripts_2024-03-27/WindowsOptimization.ps1
+
+  # Optional
+  enable_screen_capture_protection:
+    type: PowerShell
+    name: EnableScreenCaptureProtection
+    scriptUri: https://raw.githubusercontent.com/Azure/RDS-Templates/master/CustomImageTemplateScripts/CustomImageTemplateScripts_2024-03-27/ScreenCaptureProtection.ps1
+
+  configure_session_timeouts:
+    type: PowerShell
+    name: ConfigureSessionTimeouts
+    scriptUri: https://raw.githubusercontent.com/Azure/RDS-Templates/master/CustomImageTemplateScripts/CustomImageTemplateScripts_2024-03-27/ConfigureSessionTimeoutsV2.ps1
