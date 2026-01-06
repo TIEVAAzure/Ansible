@@ -27,7 +27,7 @@
         -o tsv
       register: container_sas
       changed_when: false
-      no_log: true
+      no_log: false
 
     - name: Show SAS expiry only (safe)
       ansible.builtin.debug:
