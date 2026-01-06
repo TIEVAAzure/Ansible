@@ -30,6 +30,16 @@
         - "exclude:$_.Title -like '*Beta*'"
 
   tasks:
+    - name: List manifest directory contents (diagnostic)
+      ansible.builtin.command: >
+        ls -l Playbook-Templates/AIB-Build-Manifests/IMS
+      register: ls_manifest
+      changed_when: false
+      ignore_errors: true
+
+    - debug:
+        var: ls_manifest.stdout_lines
+
     - name: Load manifest YAML
       ansible.builtin.set_fact:
         manifest: "{{ lookup('ansible.builtin.file', manifest_path) | from_yaml }}"
