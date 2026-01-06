@@ -19,30 +19,22 @@
       register: sas_expiry
       changed_when: false
 
-    - name: Get storage account keys (ARM)
-      azure_rm_resource_info:
+    - name: List storage account keys (ARM action)
+      azure.azcollection.azure_rm_resource:
+        api_version: "2023-01-01"
+        method: POST
         resource_group: "{{ rg_name }}"
         provider: Storage
         resource_type: storageAccounts
         resource_name: "{{ sa_name }}"
-        api_version: "2023-01-01"
-      register: sa_info
+        subresource:
+          - type: listKeys
+      register: sa_keys
 
-    - name: Debug storage account info keys (SAFE - no secrets)
-      ansible.builtin.debug:
-        msg:
-          - "sa_info.response length = {{ sa_info.response | length }}"
-          - "sa_info.response[0] keys = {{ (sa_info.response[0] | default({})).keys() | list }}"
-          - "Has properties? {{ (sa_info.response[0] | default({})).properties is defined }}"
-          - "properties keys = {{ ((sa_info.response[0] | default({})).properties | default({})).keys() | list }}"
-      changed_when: false
-
-    - name: Debug candidate key paths (SAFE)
-      ansible.builtin.debug:
-        msg:
-          - "properties.keys defined? {{ sa_info.response[0].properties.keys is defined if (sa_info.response|length>0 and sa_info.response[0].properties is defined) else 'n/a' }}"
-          - "keys count: {{ sa_info.response[0].properties.keys|length if (sa_info.response|length>0 and sa_info.response[0].properties is defined and sa_info.response[0].properties.keys is defined) else 'n/a' }}"
-      changed_when: false
+    - name: Extract primary key
+      ansible.builtin.set_fact:
+        sa_key: "{{ sa_keys.response.keys[0].value }}"
+      no_log: true
 
     - name: Generate container SAS (read+list) using account key
       ansible.builtin.command: >
