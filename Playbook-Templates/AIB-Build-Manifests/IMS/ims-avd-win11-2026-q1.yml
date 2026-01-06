@@ -1,7 +1,7 @@
 # AIB Build Manifest (IMS - AVD Win11 - 2026 Q1)
 # Controls:
 # - Which Microsoft built-ins run (must/optional)
-# - Any parameter values required by those built-ins (dropdowns in the GUI)
+# - Any parameter values required by those built-ins (GUI dropdown equivalents)
 # - Which of your custom scripts run from blob (order matters)
 
 manifest_version: 1
@@ -13,7 +13,6 @@ location: "uksouth"
 # Microsoft built-in customizers
 # ----------------------------
 microsoft_builtins:
-  # Must haves (your standard)
   must:
     set_default_os_language: true
     time_zone_redirection: true
@@ -23,11 +22,8 @@ microsoft_builtins:
     install_multimedia_redirection: true
     configure_windows_optimizations: true
     remove_microsoft_office_applications: true
-
-    # IMPORTANT: we run Windows Updates using the AIB WindowsUpdate customizer (not PowerShell)
     apply_windows_updates: true
 
-  # Optional (toggle per customer)
   optional:
     install_languages: false
     enable_kerberos_and_azure_ad: false
@@ -38,29 +34,26 @@ microsoft_builtins:
 # Built-in parameters (GUI dropdown equivalents)
 # ----------------------------
 
-# Used by: set_default_os_language (and install_languages if enabled)
 os_settings:
   default_os_language: "en-GB"
   install_languages:
     - "en-GB"
 
-# Used by: install_fslogix
-fslogix_settings: {}
-  # Example: "\\server\share\profiles" (double-backslashes required)
-  profile_path: '\\Shared\\Folder\\'
-  # VHD/VHDX size in MB
+# IMPORTANT:
+# You asked to allow this to be BLANK.
+# Leave profile_path as "" and your updated avd-ms-builtins.yml should skip passing it.
+fslogix_settings:
+  profile_path: ""
   vhd_size_mb: 30000
 
-# Used by: install_multimedia_redirection
 multimedia_settings:
-  vc_redist: "x64"              # x64 or x86
-  enable_edge: "Yes"            # Yes or No
-  enable_chrome: "Yes"          # Yes or No
+  vc_redist: "x64"
+  enable_edge: "Yes"
+  enable_chrome: "Yes"
 
-# Used by: remove_microsoft_office_applications
 office_settings:
-  type: "Remove"                # Remove (or Add if you ever need it)
-  version: "32"                 # 32 or 64
+  type: "Remove"
+  version: "32"
   applications:
     - "Publisher"
     - "PowerPoint"
@@ -68,19 +61,18 @@ office_settings:
     - "Excel"
     - "Access"
 
-# Used by: enable_screen_capture_protection (only if optional toggle is true)
+# Only used if enable_screen_capture_protection: true
 screen_capture_settings:
-  block_option: "BlockClient"   # BlockClient / BlockBoth (depending on MS script support)
+  block_option: "BlockClient"
 
-# Used by: configure_session_timeouts (only if optional toggle is true)
-# Convention: 0 = never (we’ll handle this in the mapping/playbook)
+# Only used if configure_session_timeouts: true
+# Convention: 0 = Never (your mapping/playbook should translate if needed)
 session_timeouts:
   disconnected_minutes: 30
   idle_minutes: 360
   active_minutes: 0
   signout_minutes: 0
 
-# Used by: configure_windows_optimizations
 windows_optimizations:
   optimizations:
     - "WindowsMediaPlayer"
@@ -101,6 +93,17 @@ windows_optimizations:
 # https://<sa>.blob.core.windows.net/<container>/<image_version>/<blob_path>?<sas>
 # ----------------------------
 custom_scripts:
+  # Generic scripts
+  # (leave empty for now)
+
+  # Application installs
+  - name: "AdobeReaderDC"
+    blob_path: "Applications/AVD-AIB-AdobeReaderDC-Update.ps1"
+
+  - name: "8x8-Update"
+    blob_path: "Applications/AVD-AIB-8x8-Update.ps1"
+
+  # Customer scripts
   - name: "AVD-AIB-3rdParty-Download"
     blob_path: "Customer/IMS/AVD-AIB-3rdParty-Download.ps1"
 
