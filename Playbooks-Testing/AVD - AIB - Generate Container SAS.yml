@@ -43,22 +43,9 @@
           - "Has response.properties? {{ (sa_keys.response.properties is defined) | default(false) }}"
       changed_when: false
 
-    # Try common shapes. We keep this task secret because it sets sa_key.
-    - name: Extract primary key (supports common response shapes)
+    - name: Extract primary key
       ansible.builtin.set_fact:
-        sa_key: >-
-          {{
-            (sa_keys.response.keys[0].value)
-            if (sa_keys.response is defined and sa_keys.response.keys is defined and (sa_keys.response.keys | length) > 0)
-            else
-            (sa_keys.response.value[0].value)
-            if (sa_keys.response is defined and sa_keys.response.value is defined and (sa_keys.response.value | length) > 0)
-            else
-            (sa_keys.response.properties.keys[0].value)
-            if (sa_keys.response is defined and sa_keys.response.properties is defined and sa_keys.response.properties.keys is defined and (sa_keys.response.properties.keys | length) > 0)
-            else
-            ''
-          }}
+        sa_key: "{{ sa_keys.response.keys[0].value }}"
       no_log: true
 
     - name: Fail if sa_key could not be extracted
