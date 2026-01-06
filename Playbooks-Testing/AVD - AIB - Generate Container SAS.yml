@@ -19,7 +19,6 @@
       register: sas_expiry
       changed_when: false
 
-    # ARM action: Microsoft.Storage/storageAccounts/listKeys
     - name: List storage account keys (ARM action)
       azure.azcollection.azure_rm_resource:
         api_version: "2023-01-01"
@@ -33,31 +32,28 @@
       register: sa_keys
       changed_when: false
 
-    # SAFE debug: shows only the shape, never the key values
     - name: Debug listKeys response shape (SAFE - no secrets)
       ansible.builtin.debug:
         msg:
           - "sa_keys.response keys = {{ (sa_keys.response | default({})).keys() | list }}"
-          - "Has response.keys? {{ (sa_keys.response.keys is defined) | default(false) }}"
-          - "Has response.value? {{ (sa_keys.response.value is defined) | default(false) }}"
-          - "Has response.properties? {{ (sa_keys.response.properties is defined) | default(false) }}"
+          - "Has response['keys']? {{ (sa_keys.response['keys'] is defined) | default(false) }}"
       changed_when: false
 
     - name: Debug first key object shape (SAFE - no secrets)
       ansible.builtin.debug:
         msg:
-          - "keys count = {{ sa_keys.response.keys | length }}"
-          - "first key object keys = {{ sa_keys.response.keys[0].keys() | list }}"
+          - "keys count = {{ (sa_keys.response['keys'] | default([])) | length }}"
+          - "first key object keys = {{ (sa_keys.response['keys'][0] | default({})).keys() | list }}"
       changed_when: false
 
     - name: Extract primary key
       ansible.builtin.set_fact:
-        sa_key: "{{ sa_keys.response.keys[0].value }}"
-      no_log: false
+        sa_key: "{{ sa_keys.response['keys'][0]['value'] }}"
+      no_log: true
 
     - name: Fail if sa_key could not be extracted
       ansible.builtin.fail:
-        msg: "Could not extract storage account key from listKeys response. Check sa_keys.response shape."
+        msg: "Could not extract storage account key from listKeys response."
       when: sa_key | length == 0
 
     - name: Generate container SAS (read+list) using account key
