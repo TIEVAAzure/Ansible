@@ -1,0 +1,36 @@
+---
+- name: AIB - Generate container SAS (test)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    sa_name: "{{ sa_name }}"
+    container_name: "{{ container_name }}"
+    sas_valid_hours: 24
+
+  tasks:
+    - name: Compute SAS expiry (UTC)
+      ansible.builtin.command: >
+        date -u -d "+{{ sas_valid_hours }} hours" +"%Y-%m-%dT%H:%MZ"
+      register: sas_expiry
+      changed_when: false
+
+    - name: Generate container SAS (read+list)
+      ansible.builtin.command: >
+        az storage container generate-sas
+        --account-name {{ sa_name }}
+        --name {{ container_name }}
+        --permissions rl
+        --expiry {{ sas_expiry.stdout }}
+        --https-only
+        -o tsv
+      register: container_sas
+      changed_when: false
+      no_log: true
+
+    - name: Show SAS expiry only (safe)
+      ansible.builtin.debug:
+        msg:
+          - "SAS expiry (UTC): {{ sas_expiry.stdout }}"
+          - "Generated SAS token: (hidden)"

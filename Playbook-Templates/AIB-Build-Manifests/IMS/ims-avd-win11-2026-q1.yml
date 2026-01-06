@@ -1,0 +1,65 @@
+# AIB Build Manifest
+# This file controls:
+# - Microsoft AVD "built-in" customizers (must + optional)
+# - Custom scripts to run from blob (explicit order)
+# - Basic image metadata for repeatable builds
+
+manifest_version: 1
+
+customer: "IMS"
+image_version: "2026-Q1"      # must match the blob prefix used by upload playbook
+location: "uksouth"
+
+# ----------------------------
+# Microsoft built-in customizers
+# ----------------------------
+microsoft_builtins:
+  # Must haves (always true for your standard)
+  must:
+    set_default_os_language: true
+    time_zone_redirection: true
+    disable_storage_sense: true
+    install_fslogix: true
+    configure_rdp_shortpath: true
+    install_multimedia_redirection: true
+    configure_windows_optimizations: true
+    remove_microsoft_office_applications: true
+    apply_windows_updates: true
+
+  # Optional (toggle per customer)
+  optional:
+    install_languages: false
+    enable_kerberos_and_azure_ad: false
+    enable_screen_capture_protection: false
+    configure_session_timeouts: false
+
+# Optional parameters used by some built-ins (keep these here even if you default them)
+os_settings:
+  default_os_language: "en-GB"
+  # If you use "Install languages", list them here:
+  install_languages:
+    - "en-GB"
+
+# ----------------------------
+# Custom scripts (from your blob container)
+# Order matters: these run top -> bottom
+# blob_path is RELATIVE to the image_version prefix
+# Example final URI becomes:
+# https://<sa>.blob.core.windows.net/<container>/<image_version>/<blob_path>
+# ----------------------------
+custom_scripts:
+  # Generic scripts
+  
+  # Application installs
+  - name: "AdobeReaderDC"
+    blob_path: "Applications/AVD-AIB-AdobeReaderDC-Update.ps1"
+
+  - name: "8x8-Update"
+    blob_path: "Applications/AVD-AIB-8x8-Update.ps1"
+
+  # Customer scripts
+  - name: "AVD-AIB-3rdParty-Download"
+    blob_path: "Customer/IMS/AVD-AIB-3rdParty-Download.ps1"
+
+  - name: "AVD-AIB-AppInstalls"
+    blob_path: "Customer/IMS/AVD-AIB-AppInstalls.ps1"
