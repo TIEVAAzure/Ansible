@@ -1,22 +1,22 @@
 ---
-- name: Show project root contents (diagnostic)
-  ansible.builtin.command: ls -l
-  register: ls_root
-  changed_when: false
+  - name: Show project root contents (diagnostic)
+    ansible.builtin.command: ls -l
+    register: ls_root
+    changed_when: false
 
-- ansible.builtin.debug:
-    var: ls_root.stdout_lines
+  - ansible.builtin.debug:
+      var: ls_root.stdout_lines
 
-- name: Show Playbook-Templates folder (diagnostic)
-  ansible.builtin.command: ls -l Playbook-Templates
-  register: ls_pt
-  changed_when: false
-  ignore_errors: true
+  - name: Show Playbook-Templates folder (diagnostic)
+    ansible.builtin.command: ls -l Playbook-Templates
+    register: ls_pt
+    changed_when: false
+    ignore_errors: true
 
-- ansible.builtin.debug:
-    var: ls_pt.stdout_lines
+  - ansible.builtin.debug:
+      var: ls_pt.stdout_lines
 
-- name: AIB - Build customize array from manifest (preview)
+  - name: AIB - Build customize array from manifest (preview)
   hosts: localhost
   connection: local
   gather_facts: false
