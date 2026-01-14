@@ -1,0 +1,114 @@
+# ============================================================================
+# AIB Build Manifest (Customer-specific)
+# ============================================================================
+# File: ims-avd-win11-2026-q1.yml
+#
+# Purpose
+#   - Defines ONE image build version for ONE customer.
+#   - Easy to review and diff (Git-friendly).
+#
+# Controls
+#   1) Which Microsoft built-ins run (must vs optional)
+#   2) Parameter values for built-ins (GUI dropdown equivalents)
+#   3) Custom scripts (ordered) run after built-ins
+#
+# Custom script reference styles
+#   A) scriptUri (recommended for simplified demo; mirrors Microsoft built-ins)
+#      - Example: GitHub "Raw" URL to a .ps1 file
+#      - Requires outbound internet access from the AIB build VM
+#   B) blob_path (private storage + SAS) for locked-down environments
+# ============================================================================
+manifest_version: 1
+customer: "IMS"
+image_version: "2026-Q1"
+location: "uksouth"
+
+microsoft_builtins:
+  must:
+    set_default_os_language: true
+    time_zone_redirection: true
+    disable_storage_sense: true
+    install_fslogix: true
+    configure_rdp_shortpath: true
+    install_multimedia_redirection: true
+    configure_windows_optimizations: true
+    remove_microsoft_office_applications: true
+    apply_windows_updates: true   # Use AIB WindowsUpdate customizer (not PowerShell)
+
+  optional:
+    install_languages: false
+    enable_kerberos_and_azure_ad: false
+    enable_screen_capture_protection: false
+    configure_session_timeouts: false
+
+# ----------------------------
+# Built-in parameters (GUI dropdown equivalents)
+# ----------------------------
+os_settings:
+  default_os_language: "en-GB"
+  install_languages:
+    - "en-GB"
+
+fslogix_settings:
+  # Leave blank if you don't want to enforce it at build-time.
+  # Mapping must omit passing empty parameters.
+  profile_path: ""
+  vhd_size_mb: 30000
+
+multimedia_settings:
+  vc_redist: "x64"
+  enable_edge: "Yes"
+  enable_chrome: "Yes"
+
+office_settings:
+  type: "Remove"
+  version: "32"
+  applications:
+    - "Publisher"
+    - "PowerPoint"
+    - "OneNote"
+    - "Excel"
+    - "Access"
+
+screen_capture_settings:
+  block_option: "BlockClient"
+
+session_timeouts:
+  disconnected_minutes: 30
+  idle_minutes: 360
+  active_minutes: 0
+  signout_minutes: 0
+
+windows_optimizations:
+  optimizations:
+    - "WindowsMediaPlayer"
+    - "ScheduledTasks"
+    - "DefaultUserSettings"
+    - "Services"
+    - "NetworkOptimizations"
+    - "DiskCleanup"
+    - "Edge"
+    - "RemoveOneDrive"
+    - "Autologgers"
+
+# ----------------------------
+# Custom scripts (ordered)
+# ----------------------------
+# Use ONE of:
+#   - scriptUri: direct URI to the PS1 (e.g. GitHub Raw URL)
+#   - blob_path: relative path under <image_version>/ in storage container
+#
+# GitHub Raw URL pattern:
+#   https://raw.githubusercontent.com/<ORG>/<REPO>/<BRANCH>/<PATH_IN_REPO>
+custom_scripts:
+  - name: "AdobeReaderDC"
+    scriptUri: "https://raw.githubusercontent.com/<ORG>/<REPO>/<BRANCH>/AVD-Scripts/Applications/AVD-AIB-AdobeReaderDC-Update.ps1"
+
+  - name: "8x8-Update"
+    scriptUri: "https://raw.githubusercontent.com/<ORG>/<REPO>/<BRANCH>/AVD-Scripts/Applications/AVD-AIB-8x8-Update.ps1"
+
+  - name: "AVD-AIB-3rdParty-Download"
+    scriptUri: "https://raw.githubusercontent.com/<ORG>/<REPO>/<BRANCH>/AVD-Scripts/Customer/IMS/AVD-AIB-3rdParty-Download.ps1"
+
+  - name: "AVD-AIB-AppInstalls"
+    scriptUri: "https://raw.githubusercontent.com/<ORG>/<REPO>/<BRANCH>/AVD-Scripts/Customer/IMS/AVD-AIB-AppInstalls.ps1"

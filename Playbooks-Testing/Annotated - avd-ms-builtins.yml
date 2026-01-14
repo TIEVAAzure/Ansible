@@ -1,0 +1,101 @@
+---
+# ============================================================================
+# File: avd-ms-builtins.yml
+# ============================================================================
+# Purpose
+#   - Translation layer between:
+#       Manifest keys (friendly flags like install_fslogix: true)
+#       and the real Azure Image Builder customizer blocks (type/name/scriptUri/inline).
+#
+# Rules of thumb
+#   - Manifest = WHAT we want for a customer + version
+#   - Built-ins map = HOW to invoke Microsoft’s built-in customizations
+#
+# Notes
+#   - Some built-ins require parameters (the same dropdowns you see in the portal).
+#     The manifest holds values; this map defines how they get passed.
+#   - Windows Updates is best done with the native AIB WindowsUpdate customizer.
+#   - FSLogix profile path must allow blank (do not pass empty string params).
+# ============================================================================
+
+ms_builtins:
+  # Optional
+  install_languages:
+    type: PowerShell
+    name: InstallLanguages
+    scriptUri: https://raw.githubusercontent.com/Azure/RDS-Templates/master/CustomImageTemplateScripts/CustomImageTemplateScripts_2024-03-27/InstallLanguagePacks.ps1
+
+  # Must
+  set_default_os_language:
+    type: PowerShell
+    name: SetDefaultOSLanguage
+    scriptUri: https://raw.githubusercontent.com/Azure/RDS-Templates/master/CustomImageTemplateScripts/CustomImageTemplateScripts_2024-03-27/SetDefaultLang.ps1
+
+  time_zone_redirection:
+    type: PowerShell
+    name: TimeZoneRedirection
+    scriptUri: https://raw.githubusercontent.com/Azure/RDS-Templates/master/CustomImageTemplateScripts/CustomImageTemplateScripts_2024-03-27/TimezoneRedirection.ps1
+
+  disable_storage_sense:
+    type: PowerShell
+    name: DisableStorageSense
+    scriptUri: https://raw.githubusercontent.com/Azure/RDS-Templates/master/CustomImageTemplateScripts/CustomImageTemplateScripts_2024-03-27/DisableStorageSense.ps1
+
+install_fslogix:
+  type: PowerShell
+  name: InstallFSLogix
+  inline: |
+    $ErrorActionPreference = "Stop"
+
+    $uri  = "https://raw.githubusercontent.com/Azure/RDS-Templates/master/CustomImageTemplateScripts/CustomImageTemplateScripts_2024-03-27/FSLogix.ps1"
+    $dest = "$env:TEMP\FSLogix.ps1"
+
+    Invoke-WebRequest -Uri $uri -OutFile $dest -UseBasicParsing
+
+    $params = @{}
+
+    if ("{{ manifest.fslogix_settings.profile_path | default('') }}" -ne "") {
+      $params["ProfilePath"] = "{{ manifest.fslogix_settings.profile_path }}"
+    }
+
+    if ("{{ manifest.fslogix_settings.vhd_size_mb | default('') }}" -ne "") {
+      $params["VHDSize"] = {{ manifest.fslogix_settings.vhd_size_mb }}
+    }
+
+    if ($params.Count -gt 0) {
+      & powershell.exe -ExecutionPolicy Bypass -File $dest @params
+    }
+    else {
+      & powershell.exe -ExecutionPolicy Bypass -File $dest
+    }
+
+  configure_rdp_shortpath:
+    type: PowerShell
+    name: ConfigureRDPShortpath
+    scriptUri: https://raw.githubusercontent.com/Azure/RDS-Templates/master/CustomImageTemplateScripts/CustomImageTemplateScripts_2024-03-27/RDPShortpath.ps1
+
+  install_multimedia_redirection:
+    type: PowerShell
+    name: InstallMultimediaRedirection
+    scriptUri: https://raw.githubusercontent.com/Azure/RDS-Templates/master/CustomImageTemplateScripts/CustomImageTemplateScripts_2024-03-27/MultiMediaRedirection.ps1
+
+  remove_microsoft_office_applications:
+    type: PowerShell
+    name: RemoveOfficeApps
+    scriptUri: https://raw.githubusercontent.com/Azure/RDS-Templates/master/CustomImageTemplateScripts/CustomImageTemplateScripts_2024-03-27/ConfigureOfficeApps.ps1
+
+  configure_windows_optimizations:
+    type: PowerShell
+    name: ConfigureWindowsOptimizations
+    scriptUri: https://raw.githubusercontent.com/Azure/RDS-Templates/master/CustomImageTemplateScripts/CustomImageTemplateScripts_2024-03-27/WindowsOptimization.ps1
+
+  # Optional
+  enable_screen_capture_protection:
+    type: PowerShell
+    name: EnableScreenCaptureProtection
+    scriptUri: https://raw.githubusercontent.com/Azure/RDS-Templates/master/CustomImageTemplateScripts/CustomImageTemplateScripts_2024-03-27/ScreenCaptureProtection.ps1
+
+  configure_session_timeouts:
+    type: PowerShell
+    name: ConfigureSessionTimeouts
+    scriptUri: https://raw.githubusercontent.com/Azure/RDS-Templates/master/CustomImageTemplateScripts/CustomImageTemplateScripts_2024-03-27/ConfigureSessionTimeoutsV2.ps1

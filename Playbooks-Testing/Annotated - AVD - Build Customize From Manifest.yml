@@ -1,0 +1,214 @@
+---
+# ============================================================================
+# Playbook: AVD - Build Customize From Manifest
+# ============================================================================
+# Purpose
+#   - Reads a customer manifest (WHAT to run + ordering)
+#   - Reads the built-ins map (HOW to call Microsoft built-ins)
+#   - Outputs an AIB-compatible customize[] array in the correct order
+#
+# Output
+#   - Writes customize[] JSON to /tmp inside the AWX runner container.
+#   - The final “Create Template + Run Build” playbook will consume this JSON.
+#
+# Supported custom script styles
+#   - scriptUri: direct URL to .ps1 (no storage/SAS needed)
+#   - blob_path: storage + SAS (only generate SAS when blob_path is used)
+# ============================================================================
+
+- name: AVD - Build Customize From Manifest
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    # ----------------------------
+    # Inputs (set these via AWX Survey / extra_vars)
+    # ----------------------------
+    manifest_path: "Playbook-Templates/AIB-Build-Manifests/IMS/ims-avd-win11-2026-q1.yml"
+    ms_builtins_map_path: "Playbook-Templates/AIB-Builtins/avd-ms-builtins.yml"
+
+    # Storage is ONLY required if you use custom_scripts with blob_path
+    sa_rg: "rg-mg-learn-uksouth-001"
+    sa_name: "REPLACE_ME"
+    container_name: "REPLACE_ME"
+    sas_valid_hours: 24
+
+    # PowerShell customizer defaults
+    ps_defaults:
+      runAsSystem: true
+      runElevated: true
+
+    # Windows Update customizer (AIB native customizer)
+    windows_update_customizer:
+      type: WindowsUpdate
+      name: ApplyWindowsUpdates
+      searchCriteria: "IsInstalled=0"
+      filters:
+        - "exclude:$_.Title -like '*Preview*'"
+        - "exclude:$_.Title -like '*Beta*'"
+
+  tasks:
+    - name: Load manifest YAML
+      ansible.builtin.set_fact:
+        manifest: "{{ lookup('ansible.builtin.file', manifest_path) | from_yaml }}"
+
+    - name: Load Microsoft built-ins mapping YAML
+      ansible.builtin.set_fact:
+        ms_map: "{{ lookup('ansible.builtin.file', ms_builtins_map_path) | from_yaml }}"
+
+    - name: Detect whether any custom scripts use blob_path (requires SAS)
+      ansible.builtin.set_fact:
+        need_blob_scripts: >-
+          {{
+            (manifest.custom_scripts | default([]) | selectattr('blob_path','defined') | list | length) > 0
+          }}
+      changed_when: false
+
+    # ----------------------------
+    # Generate SAS ONLY when required
+    # ----------------------------
+    - name: Compute SAS expiry (UTC)
+      ansible.builtin.command: >
+        date -u -d "+{{ sas_valid_hours }} hours" +"%Y-%m-%dT%H:%MZ"
+      register: sas_expiry
+      changed_when: false
+      when: need_blob_scripts | bool
+
+    - name: List storage account keys (ARM action)
+      ansible.builtin.command: >
+        az storage account keys list
+        --resource-group {{ sa_rg }}
+        --account-name {{ sa_name }}
+        --query "[0].value"
+        -o tsv
+      register: sa_key
+      changed_when: false
+      no_log: true
+      when: need_blob_scripts | bool
+
+    - name: Generate container SAS (read+list) using account key
+      ansible.builtin.command: >
+        az storage container generate-sas
+        --account-name {{ sa_name }}
+        --account-key {{ sa_key.stdout }}
+        --name {{ container_name }}
+        --permissions rl
+        --expiry {{ sas_expiry.stdout }}
+        --https-only
+        -o tsv
+      register: container_sas
+      changed_when: false
+      no_log: true
+      when: need_blob_scripts | bool
+
+    - name: Build scripts base URL (blob)
+      ansible.builtin.set_fact:
+        scripts_base_url: "https://{{ sa_name }}.blob.core.windows.net/{{ container_name }}/{{ manifest.image_version }}"
+      changed_when: false
+      when: need_blob_scripts | bool
+
+    # ----------------------------
+    # Build customize[]
+    # ----------------------------
+    - name: Start customize list
+      ansible.builtin.set_fact:
+        customize: []
+      changed_when: false
+
+    - name: Add Microsoft must built-ins (excluding Windows Update special case)
+      ansible.builtin.set_fact:
+        customize: "{{ customize + [ (ms_map.ms_builtins[item] | combine(ps_defaults, recursive=true)) ] }}"
+      loop: "{{ (manifest.microsoft_builtins.must | default({})).keys() | list }}"
+      when:
+        - manifest.microsoft_builtins is defined
+        - manifest.microsoft_builtins.must is defined
+        - (manifest.microsoft_builtins.must[item] | bool) == true
+        - item != 'apply_windows_updates'
+        - ms_map.ms_builtins[item] is defined
+
+    - name: Add Microsoft optional built-ins (excluding Windows Update special case)
+      ansible.builtin.set_fact:
+        customize: "{{ customize + [ (ms_map.ms_builtins[item] | combine(ps_defaults, recursive=true)) ] }}"
+      loop: "{{ (manifest.microsoft_builtins.optional | default({})).keys() | list }}"
+      when:
+        - manifest.microsoft_builtins is defined
+        - manifest.microsoft_builtins.optional is defined
+        - (manifest.microsoft_builtins.optional[item] | bool) == true
+        - item != 'apply_windows_updates'
+        - ms_map.ms_builtins[item] is defined
+
+    - name: Add Windows Updates (AIB WindowsUpdate customizer) when enabled
+      ansible.builtin.set_fact:
+        customize: "{{ customize + [ windows_update_customizer ] }}"
+      when:
+        - manifest.microsoft_builtins is defined
+        - manifest.microsoft_builtins.must is defined
+        - (manifest.microsoft_builtins.must.apply_windows_updates | default(false) | bool) == true
+
+    # ----------------------------
+    # Custom scripts (two supported styles)
+    #
+    # Style A (recommended for “no storage/SAS”): scriptUri directly (e.g. raw GitHub URL)
+    #   custom_scripts:
+    #     - name: MyScript
+    #       scriptUri: "https://raw.githubusercontent.com/<org>/<repo>/main/AVD-Scripts/Customer/IMS/My.ps1"
+    #
+    # Style B (blob_path): keep using Storage + SAS
+    #   custom_scripts:
+    #     - name: MyScript
+    #       blob_path: "Customer/IMS/My.ps1"
+    # ----------------------------
+    - name: Add custom scripts with scriptUri (ordered)
+      ansible.builtin.set_fact:
+        customize: >-
+          {{
+            customize + [
+              {
+                'type': 'PowerShell',
+                'name': (item.name | regex_replace('[^A-Za-z0-9\-]', '-') ),
+                'scriptUri': item.scriptUri,
+                'runAsSystem': true,
+                'runElevated': true
+              }
+            ]
+          }}
+      loop: "{{ manifest.custom_scripts | default([]) }}"
+      when: item.scriptUri is defined
+
+    - name: Add custom scripts with blob_path (ordered; SAS appended)
+      ansible.builtin.set_fact:
+        customize: >-
+          {{
+            customize + [
+              {
+                'type': 'PowerShell',
+                'name': (item.name | regex_replace('[^A-Za-z0-9\-]', '-') ),
+                'scriptUri': (scripts_base_url ~ '/' ~ item.blob_path ~ '?' ~ container_sas.stdout),
+                'runAsSystem': true,
+                'runElevated': true
+              }
+            ]
+          }}
+      loop: "{{ manifest.custom_scripts | default([]) }}"
+      when:
+        - item.blob_path is defined
+        - need_blob_scripts | bool
+      no_log: true  # hides SAS in logs
+
+    # ----------------------------
+    # Output
+    # ----------------------------
+    - name: Preview customize list (safe - no SAS)
+      ansible.builtin.debug:
+        msg:
+          - "Customer={{ manifest.customer | default('UNKNOWN') }} image_version={{ manifest.image_version | default('UNKNOWN') }}"
+          - "Customize steps count: {{ customize | length }}"
+          - "Step names (order): {{ customize | map(attribute='name') | list }}"
+      changed_when: false
+
+    - name: Write customize JSON to /tmp for inspection (runner)
+      ansible.builtin.copy:
+        dest: "/tmp/aib-customize-{{ manifest.customer | default('customer') | lower }}-{{ manifest.image_version | default('version') }}.json"
+        content: "{{ customize | to_nice_json }}"
+      changed_when: false
+      no_log: true
