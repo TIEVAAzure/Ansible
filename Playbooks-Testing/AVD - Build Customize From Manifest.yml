@@ -3,42 +3,54 @@
 # Playbook: AVD - Build Customize From Manifest
 # ============================================================================
 # Purpose
-#   - Reads a customer manifest (WHAT to run + ordering)
-#   - Reads the built-ins map (HOW to call Microsoft built-ins)
-#   - Outputs an AIB-compatible customize[] array in the correct order
+#   - Reads a customer manifest YAML (WHAT to run + ordering)
+#   - Reads the MS built-ins mapping YAML (HOW to call built-ins)
+#   - Builds an AIB-compatible customize[] array in the correct order
+#   - Outputs customize[] JSON to /tmp inside the AWX runner
 #
-# Output
-#   - Writes customize[] JSON to /tmp inside the AWX runner container.
-#   - The final “Create Template + Run Build” playbook will consume this JSON.
+# AWX NOTE (IMPORTANT)
+#   - In AWX, playbooks often live in a subfolder (e.g. Playbooks-Testing),
+#     while shared manifests live in a sibling folder (e.g. Playbook-Templates)
+#     at the project root.
+#   - Therefore we anchor file lookups to the AWX project checkout root:
+#       /runner/project
+#     NOT to playbook_dir.
 #
-# Supported custom script styles
-#   - scriptUri: direct URL to .ps1 (no storage/SAS needed)
-#   - blob_path: storage + SAS (only generate SAS when blob_path is used)
+# Required variables (Survey)
+#   - manifest_path
+#   - ms_builtins_map_path
+#
+# Optional (ONLY if using custom_scripts with blob_path which requires SAS)
+#   - sa_rg
+#   - sa_name
+#   - container_name
+#   - sas_valid_hours
 # ============================================================================
 
 - name: AVD - Build Customize From Manifest
   hosts: localhost
   gather_facts: false
+  connection: local
 
   vars:
-    # ----------------------------
-    # Inputs (set these via AWX Survey / extra_vars)
-    # ----------------------------
+    # ------------------------------------------------------------------------
+    # Defaults (these should be overridden by AWX Survey / extra_vars)
+    # ------------------------------------------------------------------------
     manifest_path: "Playbook-Templates/AIB-Build-Manifests/IMS/ims-avd-win11-2026-q1.yml"
     ms_builtins_map_path: "Playbook-Templates/AIB-Builtins/avd-ms-builtins.yml"
 
-    # Storage is ONLY required if you use custom_scripts with blob_path
-    sa_rg: "rg-mg-learn-uksouth-001"
-    sa_name: "REPLACE_ME"
-    container_name: "REPLACE_ME"
+    # Storage/SAS settings (only required if manifest uses custom_scripts.blob_path)
+    sa_rg: ""
+    sa_name: ""
+    container_name: ""
     sas_valid_hours: 24
 
-    # PowerShell customizer defaults
+    # PowerShell customizer defaults (AIB PowerShell customizer options)
     ps_defaults:
       runAsSystem: true
       runElevated: true
 
-    # Windows Update customizer (AIB native customizer)
+    # Optional Windows Update customizer (only added if manifest enables it)
     windows_update_customizer:
       type: WindowsUpdate
       name: ApplyWindowsUpdates
@@ -47,38 +59,77 @@
         - "exclude:$_.Title -like '*Preview*'"
         - "exclude:$_.Title -like '*Beta*'"
 
-  tasks:
+  pre_tasks:
     # ------------------------------------------------------------------------
-    # Resolve paths safely in AWX
-    #   - AWX runners can have a different working directory, so relative paths
-    #     may fail if used directly in lookup('file', ...).
-    #   - We anchor to playbook_dir + repo-relative path using path_join.
+    # Validate required inputs early (fail fast)
     # ------------------------------------------------------------------------
-    - name: Resolve manifest + built-ins full paths (AWX-safe)
+    - name: Validate required survey variables
+      ansible.builtin.assert:
+        that:
+          - manifest_path is defined and manifest_path | length > 0
+          - ms_builtins_map_path is defined and ms_builtins_map_path | length > 0
+        fail_msg: >
+          Missing required vars. Ensure AWX Survey provides:
+          manifest_path, ms_builtins_map_path.
+
+    # ------------------------------------------------------------------------
+    # Set the AWX project root. This is where AWX checks out the git repo.
+    # We anchor lookups here because playbooks may run from subfolders.
+    # ------------------------------------------------------------------------
+    - name: Set AWX project root
       ansible.builtin.set_fact:
-        manifest_full_path: "{{ [playbook_dir, manifest_path] | path_join }}"
-        ms_builtins_full_path: "{{ [playbook_dir, ms_builtins_map_path] | path_join }}"
+        project_root: "/runner/project"
       changed_when: false
 
-    # Optional debug (safe to leave in, but you can remove later)
+    - name: Resolve manifest + built-ins full paths from project root
+      ansible.builtin.set_fact:
+        manifest_full_path: "{{ [project_root, manifest_path] | path_join }}"
+        ms_builtins_full_path: "{{ [project_root, ms_builtins_map_path] | path_join }}"
+      changed_when: false
+
     - name: Debug resolved paths
       ansible.builtin.debug:
         msg:
-          - "playbook_dir={{ playbook_dir }}"
+          - "project_root={{ project_root }}"
           - "manifest_full_path={{ manifest_full_path }}"
           - "ms_builtins_full_path={{ ms_builtins_full_path }}"
       changed_when: false
-    - name: Check if manifest file exists on disk
+
+    # ------------------------------------------------------------------------
+    # Prove files exist (this removes all ambiguity)
+    # ------------------------------------------------------------------------
+    - name: Check manifest file exists on disk
       ansible.builtin.stat:
         path: "{{ manifest_full_path }}"
       register: mf_stat
       changed_when: false
 
-    - name: Debug manifest stat
-      ansible.builtin.debug:
-        var: mf_stat.stat
+    - name: Check built-ins map file exists on disk
+      ansible.builtin.stat:
+        path: "{{ ms_builtins_full_path }}"
+      register: bi_stat
       changed_when: false
 
+    - name: Fail if manifest file is missing
+      ansible.builtin.assert:
+        that:
+          - mf_stat.stat.exists | bool
+        fail_msg: >
+          Manifest file not found at: {{ manifest_full_path }}.
+          Confirm the file exists in the repo and the AWX Project is synced.
+
+    - name: Fail if built-ins map file is missing
+      ansible.builtin.assert:
+        that:
+          - bi_stat.stat.exists | bool
+        fail_msg: >
+          Built-ins map file not found at: {{ ms_builtins_full_path }}.
+          Confirm the file exists in the repo and the AWX Project is synced.
+
+  tasks:
+    # ------------------------------------------------------------------------
+    # Load YAML files
+    # ------------------------------------------------------------------------
     - name: Load manifest YAML
       ansible.builtin.set_fact:
         manifest: "{{ lookup('ansible.builtin.file', manifest_full_path) | from_yaml }}"
@@ -87,6 +138,10 @@
       ansible.builtin.set_fact:
         ms_map: "{{ lookup('ansible.builtin.file', ms_builtins_full_path) | from_yaml }}"
 
+    # ------------------------------------------------------------------------
+    # Determine whether we need to generate a SAS token
+    #   - Only required when custom scripts use blob_path
+    # ------------------------------------------------------------------------
     - name: Detect whether any custom scripts use blob_path (requires SAS)
       ansible.builtin.set_fact:
         need_blob_scripts: >-
@@ -95,9 +150,22 @@
           }}
       changed_when: false
 
-    # ----------------------------
+    - name: Validate storage variables if blob_path scripts are required
+      ansible.builtin.assert:
+        that:
+          - sa_rg | length > 0
+          - sa_name | length > 0
+          - container_name | length > 0
+        fail_msg: >
+          Your manifest contains custom_scripts with blob_path, so storage settings are required.
+          Provide sa_rg, sa_name, container_name (and optionally sas_valid_hours).
+      when: need_blob_scripts | bool
+
+    # ------------------------------------------------------------------------
     # Generate SAS ONLY when required
-    # ----------------------------
+    # NOTE: This uses Azure CLI. If you truly removed blob scripts, this block
+    # will be skipped and Azure CLI is not needed.
+    # ------------------------------------------------------------------------
     - name: Compute SAS expiry (UTC)
       ansible.builtin.command: >
         date -u -d "+{{ sas_valid_hours }} hours" +"%Y-%m-%dT%H:%MZ"
@@ -105,7 +173,7 @@
       changed_when: false
       when: need_blob_scripts | bool
 
-    - name: List storage account keys (ARM action)
+    - name: List storage account keys (requires Azure CLI)
       ansible.builtin.command: >
         az storage account keys list
         --resource-group {{ sa_rg }}
@@ -138,15 +206,18 @@
       changed_when: false
       when: need_blob_scripts | bool
 
-    # ----------------------------
+    # ------------------------------------------------------------------------
     # Build customize[]
-    # ----------------------------
+    # ------------------------------------------------------------------------
     - name: Start customize list
       ansible.builtin.set_fact:
         customize: []
       changed_when: false
 
-    - name: Add Microsoft must built-ins (excluding Windows Update special case)
+    # ------------------------------------------------------------------------
+    # Add Microsoft "must" built-ins (excluding Windows Update special case)
+    # ------------------------------------------------------------------------
+    - name: Add Microsoft must built-ins (excluding Windows Update)
       ansible.builtin.set_fact:
         customize: "{{ customize + [ (ms_map.ms_builtins[item] | combine(ps_defaults, recursive=true)) ] }}"
       loop: "{{ (manifest.microsoft_builtins.must | default({})).keys() | list }}"
@@ -155,9 +226,13 @@
         - manifest.microsoft_builtins.must is defined
         - (manifest.microsoft_builtins.must[item] | bool) == true
         - item != 'apply_windows_updates'
+        - ms_map.ms_builtins is defined
         - ms_map.ms_builtins[item] is defined
 
-    - name: Add Microsoft optional built-ins (excluding Windows Update special case)
+    # ------------------------------------------------------------------------
+    # Add Microsoft "optional" built-ins (excluding Windows Update special case)
+    # ------------------------------------------------------------------------
+    - name: Add Microsoft optional built-ins (excluding Windows Update)
       ansible.builtin.set_fact:
         customize: "{{ customize + [ (ms_map.ms_builtins[item] | combine(ps_defaults, recursive=true)) ] }}"
       loop: "{{ (manifest.microsoft_builtins.optional | default({})).keys() | list }}"
@@ -166,8 +241,12 @@
         - manifest.microsoft_builtins.optional is defined
         - (manifest.microsoft_builtins.optional[item] | bool) == true
         - item != 'apply_windows_updates'
+        - ms_map.ms_builtins is defined
         - ms_map.ms_builtins[item] is defined
 
+    # ------------------------------------------------------------------------
+    # Windows Updates special case (AIB WindowsUpdate customizer)
+    # ------------------------------------------------------------------------
     - name: Add Windows Updates (AIB WindowsUpdate customizer) when enabled
       ansible.builtin.set_fact:
         customize: "{{ customize + [ windows_update_customizer ] }}"
@@ -176,19 +255,17 @@
         - manifest.microsoft_builtins.must is defined
         - (manifest.microsoft_builtins.must.apply_windows_updates | default(false) | bool) == true
 
-    # ----------------------------
-    # Custom scripts (two supported styles)
+    # ------------------------------------------------------------------------
+    # Custom scripts
     #
-    # Style A (recommended for “no storage/SAS”): scriptUri directly (e.g. raw GitHub URL)
-    #   custom_scripts:
-    #     - name: MyScript
-    #       scriptUri: "https://raw.githubusercontent.com/<org>/<repo>/main/AVD-Scripts/Customer/IMS/My.ps1"
+    # Style A: scriptUri provided (no SAS needed)
+    #   - name: Something
+    #     scriptUri: "https://raw.githubusercontent.com/.../script.ps1"
     #
-    # Style B (blob_path): keep using Storage + SAS
-    #   custom_scripts:
-    #     - name: MyScript
-    #       blob_path: "Customer/IMS/My.ps1"
-    # ----------------------------
+    # Style B: blob_path provided (requires SAS; scriptUri is constructed)
+    #   - name: Something
+    #     blob_path: "Customer/IMS/script.ps1"
+    # ------------------------------------------------------------------------
     - name: Add custom scripts with scriptUri (ordered)
       ansible.builtin.set_fact:
         customize: >-
@@ -196,7 +273,7 @@
             customize + [
               {
                 'type': 'PowerShell',
-                'name': (item.name | regex_replace('[^A-Za-z0-9\\-]', '-') ),
+                'name': (item.name | default('custom-script') | regex_replace('[^A-Za-z0-9\\-]', '-') ),
                 'scriptUri': item.scriptUri,
                 'runAsSystem': true,
                 'runElevated': true
@@ -213,7 +290,7 @@
             customize + [
               {
                 'type': 'PowerShell',
-                'name': (item.name | regex_replace('[^A-Za-z0-9\\-]', '-') ),
+                'name': (item.name | default('custom-script') | regex_replace('[^A-Za-z0-9\\-]', '-') ),
                 'scriptUri': (scripts_base_url ~ '/' ~ item.blob_path ~ '?' ~ container_sas.stdout),
                 'runAsSystem': true,
                 'runElevated': true
@@ -224,15 +301,16 @@
       when:
         - item.blob_path is defined
         - need_blob_scripts | bool
-      no_log: true  # hides SAS in logs
+      no_log: true  # prevent SAS token leakage in logs
 
-    # ----------------------------
+    # ------------------------------------------------------------------------
     # Output
-    # ----------------------------
-    - name: Preview customize list (safe - no SAS)
+    # ------------------------------------------------------------------------
+    - name: Preview customize list (safe output)
       ansible.builtin.debug:
         msg:
           - "Customer={{ manifest.customer | default('UNKNOWN') }} image_version={{ manifest.image_version | default('UNKNOWN') }}"
+          - "need_blob_scripts={{ need_blob_scripts }}"
           - "Customize steps count: {{ customize | length }}"
           - "Step names (order): {{ customize | map(attribute='name') | list }}"
       changed_when: false
