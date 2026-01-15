@@ -4,11 +4,13 @@
 # ============================================================================
 # Purpose
 #   - Creates (or ensures) the UAMI used by Azure Image Builder.
-#   - Assigns RBAC on staging RG + image definition for publishing.
+#   - Assigns RBAC on:
+#       1) Staging Resource Group scope
+#       2) Image Definition scope (gallery image definition resource ID)
 #
-# Notes
-#   - This version uses ONLY Ansible Azure modules (no Azure CLI dependency).
-#   - Authentication is handled via AWX Azure Credential / environment variables.
+# Why ARM deployments?
+#   - Your current Execution Environment supports azure_rm_deployment (proven).
+#   - Avoids Azure CLI (az) and avoids missing azure.azcollection modules.
 #
 # Required variables (Survey)
 #   - identity_rg
@@ -18,19 +20,23 @@
 #   - gallery_rg
 #   - gallery_name
 #   - image_definition_name
-#   - aib_role_name
+#   - aib_role_name          (we map common names to role GUIDs)
+#
+# Notes
+#   - gallery_name rules: letters/numbers, underscore, dot (no hyphens).
+#   - RBAC requires the AWX SP to have Owner or User Access Administrator.
 # ============================================================================
 
-- name: AVD - Create AIB UAMI (Module-based)
+- name: AVD - Create AIB UAMI (ARM deployment based)
   hosts: localhost
   connection: local
   gather_facts: false
 
-  # --------------------------------------------------------------------------
-  # Pre-flight validation (fail fast with clear messages)
-  # --------------------------------------------------------------------------
   pre_tasks:
-    - name: Validate required survey variables are provided
+    # --------------------------------------------------------------------------
+    # Validate required inputs (fail fast)
+    # --------------------------------------------------------------------------
+    - name: Validate required survey variables
       ansible.builtin.assert:
         that:
           - identity_rg is defined and identity_rg | length > 0
@@ -42,104 +48,185 @@
           - image_definition_name is defined and image_definition_name | length > 0
           - aib_role_name is defined and aib_role_name | length > 0
         fail_msg: >
-          Missing one or more required variables. Check your AWX Survey fields:
+          Missing required vars. Ensure AWX Survey provides:
           identity_rg, location, uami_name, staging_rg, gallery_rg, gallery_name,
           image_definition_name, aib_role_name.
 
-    - name: Read subscription id from environment (AWX Azure Credential)
+    # --------------------------------------------------------------------------
+    # Subscription is needed to build resource IDs/scopes
+    # AWX Azure Credential typically sets AZURE_SUBSCRIPTION_ID
+    # --------------------------------------------------------------------------
+    - name: Read subscription id from environment
       ansible.builtin.set_fact:
         subscription_id: "{{ lookup('env', 'AZURE_SUBSCRIPTION_ID') | default('', true) }}"
 
-    - name: Validate AZURE_SUBSCRIPTION_ID is available to the job
+    - name: Validate subscription id is present
       ansible.builtin.assert:
         that:
           - subscription_id | length > 0
         fail_msg: >
-          AZURE_SUBSCRIPTION_ID was not found in the job environment.
-          Ensure your AWX Job Template has the correct Azure Credential attached.
+          AZURE_SUBSCRIPTION_ID not found in job environment.
+          Ensure the correct Azure Credential is attached to the Job Template.
+
+    # --------------------------------------------------------------------------
+    # Map common role names to role definition GUIDs.
+    # You can extend this list if needed.
+    # --------------------------------------------------------------------------
+    - name: Map role name to role definition GUID
+      ansible.builtin.set_fact:
+        role_definition_guid_map:
+          contributor: "b24988ac-6180-42a0-ab88-20f7382dd24c"
+          reader: "acdd72a7-3385-48ef-bd42-f606fba81ae7"
+
+    - name: Resolve role definition GUID from aib_role_name
+      ansible.builtin.set_fact:
+        role_definition_guid: "{{ role_definition_guid_map[aib_role_name | lower] | default('') }}"
+
+    - name: Fail if role name is not supported by the built-in map
+      ansible.builtin.assert:
+        that:
+          - role_definition_guid | length > 0
+        fail_msg: >
+          aib_role_name='{{ aib_role_name }}' is not in the role map.
+          Supported: Contributor, Reader.
+          Either use one of those, or extend role_definition_guid_map in the playbook.
+
+    # --------------------------------------------------------------------------
+    # Build resource IDs we need for scopes
+    # --------------------------------------------------------------------------
+    - name: Build Image Definition resource ID
+      ansible.builtin.set_fact:
+        image_definition_id: >-
+          /subscriptions/{{ subscription_id }}/resourceGroups/{{ gallery_rg }}/providers/Microsoft.Compute/galleries/{{ gallery_name }}/images/{{ image_definition_name }}
 
   tasks:
-    # ------------------------------------------------------------------------
-    # 1) Create (or ensure) the User Assigned Managed Identity (UAMI)
-    # ------------------------------------------------------------------------
-    - name: Create or update User Assigned Managed Identity (UAMI)
-      azure.azcollection.azure_rm_managedidentity:
+    # ==========================================================================
+    # 1) Create/ensure the UAMI in the identity RG
+    #    - Capture principalId via ARM outputs for later RBAC.
+    # ==========================================================================
+    - name: Deploy UAMI (User Assigned Managed Identity) into identity RG
+      azure_rm_deployment:
         resource_group: "{{ identity_rg }}"
-        name: "{{ uami_name }}"
         location: "{{ location }}"
+        name: "deploy-uami-{{ uami_name }}"
         state: present
-      register: uami_result
+        deployment_mode: incremental
+        template:
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#"
+          contentVersion: "1.0.0.0"
+          parameters:
+            uamiName:
+              type: string
+            location:
+              type: string
+          resources:
+            - type: "Microsoft.ManagedIdentity/userAssignedIdentities"
+              apiVersion: "2023-01-31"
+              name: "[parameters('uamiName')]"
+              location: "[parameters('location')]"
+          outputs:
+            principalId:
+              type: string
+              value: "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('uamiName')), '2023-01-31').principalId]"
+            clientId:
+              type: string
+              value: "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('uamiName')), '2023-01-31').clientId]"
+        parameters:
+          uamiName:
+            value: "{{ uami_name }}"
+          location:
+            value: "{{ location }}"
+      register: uami_deploy
 
-    # ------------------------------------------------------------------------
-    # 2) Capture the principal_id for RBAC assignments
-    #    - Different module versions return slightly different structures,
-    #      so we safely try multiple paths.
-    # ------------------------------------------------------------------------
-    - name: Extract UAMI principal_id from module result
+    - name: Extract UAMI principalId from deployment outputs
       ansible.builtin.set_fact:
-        uami_principal_id: >-
-          {{
-            (uami_result.managed_identity.principal_id
-              | default(uami_result.state.principal_id, true)
-              | default(uami_result.response.principal_id, true)
-              | default(uami_result.principal_id, true)
-              | default('', true))
-          }}
+        uami_principal_id: "{{ uami_deploy.deployment.outputs.principalId.value | default('') }}"
 
-    - name: Validate UAMI principal_id was retrieved successfully
+    - name: Validate principalId was returned
       ansible.builtin.assert:
         that:
           - uami_principal_id | length > 0
         fail_msg: >
-          Could not determine the UAMI principal_id from the module output.
-          Enable verbose logging in AWX and review uami_result.
+          UAMI deployment did not return principalId output. Check the deployment result in Azure portal.
 
-    # ------------------------------------------------------------------------
-    # 3) Build RBAC scopes
-    #    - Staging scope: RG-level permissions for AIB temp resources.
-    #    - Image definition scope: permission to publish image versions.
-    # ------------------------------------------------------------------------
-    - name: Build staging RG scope
-      ansible.builtin.set_fact:
-        staging_scope: "/subscriptions/{{ subscription_id }}/resourceGroups/{{ staging_rg }}"
-
-    - name: Build Image Definition scope (gallery -> image definition)
-      ansible.builtin.set_fact:
-        imgdef_scope: >-
-          /subscriptions/{{ subscription_id }}/resourceGroups/{{ gallery_rg }}
-          /providers/Microsoft.Compute/galleries/{{ gallery_name }}
-          /images/{{ image_definition_name }}
-
-    # ------------------------------------------------------------------------
-    # 4) Assign RBAC roles
-    #    - If the role assignment already exists, the module remains idempotent.
-    #
-    # IMPORTANT
-    #   - Your AWX Service Principal must be allowed to create role assignments:
-    #       * Owner OR User Access Administrator (or custom with roleAssignments/write)
-    # ------------------------------------------------------------------------
-    - name: Assign role on AIB staging resource group
-      azure.azcollection.azure_rm_roleassignment:
-        scope: "{{ staging_scope }}"
-        assignee_object_id: "{{ uami_principal_id }}"
-        role_definition_name: "{{ aib_role_name }}"
+    # ==========================================================================
+    # 2) Assign RBAC at STAGING RG scope
+    #    - Creates role assignment as a resource in that RG deployment.
+    # ==========================================================================
+    - name: Assign role on AIB Staging RG
+      azure_rm_deployment:
+        resource_group: "{{ staging_rg }}"
+        location: "{{ location }}"
+        name: "deploy-rbac-staging-{{ uami_name }}"
         state: present
+        deployment_mode: incremental
+        template:
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#"
+          contentVersion: "1.0.0.0"
+          parameters:
+            principalId:
+              type: string
+            roleDefinitionId:
+              type: string
+          resources:
+            - type: "Microsoft.Authorization/roleAssignments"
+              apiVersion: "2022-04-01"
+              # GUID must be stable/idempotent - use guid() so reruns don't create duplicates
+              name: "[guid(resourceGroup().id, parameters('principalId'), parameters('roleDefinitionId'))]"
+              properties:
+                principalId: "[parameters('principalId')]"
+                roleDefinitionId: "[parameters('roleDefinitionId')]"
+        parameters:
+          principalId:
+            value: "{{ uami_principal_id }}"
+          roleDefinitionId:
+            value: "/subscriptions/{{ subscription_id }}/providers/Microsoft.Authorization/roleDefinitions/{{ role_definition_guid }}"
 
-    - name: Assign role on image definition (publish image versions)
-      azure.azcollection.azure_rm_roleassignment:
-        scope: "{{ imgdef_scope | regex_replace('\\s+', '') }}"
-        assignee_object_id: "{{ uami_principal_id }}"
-        role_definition_name: "{{ aib_role_name }}"
+    # ==========================================================================
+    # 3) Assign RBAC at IMAGE DEFINITION scope
+    #    - Deploy into gallery_rg, but apply role assignment scoped to the imageDefinitionId.
+    # ==========================================================================
+    - name: Assign role on Image Definition scope
+      azure_rm_deployment:
+        resource_group: "{{ gallery_rg }}"
+        location: "{{ location }}"
+        name: "deploy-rbac-imgdef-{{ uami_name }}"
         state: present
+        deployment_mode: incremental
+        template:
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#"
+          contentVersion: "1.0.0.0"
+          parameters:
+            principalId:
+              type: string
+            roleDefinitionId:
+              type: string
+            targetScope:
+              type: string
+          resources:
+            - type: "Microsoft.Authorization/roleAssignments"
+              apiVersion: "2022-04-01"
+              name: "[guid(parameters('targetScope'), parameters('principalId'), parameters('roleDefinitionId'))]"
+              scope: "[parameters('targetScope')]"
+              properties:
+                principalId: "[parameters('principalId')]"
+                roleDefinitionId: "[parameters('roleDefinitionId')]"
+        parameters:
+          principalId:
+            value: "{{ uami_principal_id }}"
+          roleDefinitionId:
+            value: "/subscriptions/{{ subscription_id }}/providers/Microsoft.Authorization/roleDefinitions/{{ role_definition_guid }}"
+          targetScope:
+            value: "{{ image_definition_id }}"
 
-    # ------------------------------------------------------------------------
-    # 5) Output summary (useful in AWX job output)
-    # ------------------------------------------------------------------------
+    # ==========================================================================
+    # 4) Summary output
+    # ==========================================================================
     - name: Summary
       ansible.builtin.debug:
         msg:
-          - "UAMI ensured: {{ uami_name }} (RG: {{ identity_rg }}, location: {{ location }})"
-          - "UAMI principal_id: {{ uami_principal_id }}"
-          - "RBAC applied: role='{{ aib_role_name }}'"
-          - "Staging scope: {{ staging_scope }}"
-          - "Image definition scope: {{ imgdef_scope | regex_replace('\\s+', '') }}"
+          - "UAMI ensured: {{ uami_name }} (RG: {{ identity_rg }})"
+          - "UAMI principalId: {{ uami_principal_id }}"
+          - "RBAC role: {{ aib_role_name }} ({{ role_definition_guid }})"
+          - "Staging RG: {{ staging_rg }}"
+          - "Image Definition scope: {{ image_definition_id }}"
