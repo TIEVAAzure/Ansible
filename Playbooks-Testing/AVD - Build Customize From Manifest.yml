@@ -25,6 +25,10 @@
 #   - sa_name
 #   - container_name
 #   - sas_valid_hours
+#
+# Fix included (2026-01-15)
+#   - Handles custom_scripts being omitted, null, blank, or an empty list safely
+#     using default([], true) so loops never fail.
 # ============================================================================
 
 - name: AVD - Build Customize From Manifest
@@ -96,7 +100,7 @@
       changed_when: false
 
     # ------------------------------------------------------------------------
-    # Prove files exist (this removes all ambiguity)
+    # Prove files exist (removes ambiguity)
     # ------------------------------------------------------------------------
     - name: Check manifest file exists on disk
       ansible.builtin.stat:
@@ -141,12 +145,13 @@
     # ------------------------------------------------------------------------
     # Determine whether we need to generate a SAS token
     #   - Only required when custom scripts use blob_path
+    #   - default([], true) handles: missing key, null, blank, or empty list
     # ------------------------------------------------------------------------
     - name: Detect whether any custom scripts use blob_path (requires SAS)
       ansible.builtin.set_fact:
         need_blob_scripts: >-
           {{
-            (manifest.custom_scripts | default([]) | selectattr('blob_path','defined') | list | length) > 0
+            (manifest.custom_scripts | default([], true) | selectattr('blob_path','defined') | list | length) > 0
           }}
       changed_when: false
 
@@ -163,8 +168,7 @@
 
     # ------------------------------------------------------------------------
     # Generate SAS ONLY when required
-    # NOTE: This uses Azure CLI. If you truly removed blob scripts, this block
-    # will be skipped and Azure CLI is not needed.
+    # NOTE: This uses Azure CLI. If you removed blob scripts, this block is skipped.
     # ------------------------------------------------------------------------
     - name: Compute SAS expiry (UTC)
       ansible.builtin.command: >
@@ -265,6 +269,9 @@
     # Style B: blob_path provided (requires SAS; scriptUri is constructed)
     #   - name: Something
     #     blob_path: "Customer/IMS/script.ps1"
+    #
+    # IMPORTANT:
+    #   - default([], true) ensures loop always receives a list (even if null/blank)
     # ------------------------------------------------------------------------
     - name: Add custom scripts with scriptUri (ordered)
       ansible.builtin.set_fact:
@@ -273,14 +280,14 @@
             customize + [
               {
                 'type': 'PowerShell',
-                'name': (item.name | default('custom-script') | regex_replace('[^A-Za-z0-9\\-]', '-') ),
+                'name': (item.name | default('custom-script') | regex_replace('[^A-Za-z0-9\-]', '-') ),
                 'scriptUri': item.scriptUri,
                 'runAsSystem': true,
                 'runElevated': true
               }
             ]
           }}
-      loop: "{{ manifest.custom_scripts | default([]) }}"
+      loop: "{{ manifest.custom_scripts | default([], true) }}"
       when: item.scriptUri is defined
 
     - name: Add custom scripts with blob_path (ordered; SAS appended)
@@ -290,14 +297,14 @@
             customize + [
               {
                 'type': 'PowerShell',
-                'name': (item.name | default('custom-script') | regex_replace('[^A-Za-z0-9\\-]', '-') ),
+                'name': (item.name | default('custom-script') | regex_replace('[^A-Za-z0-9\-]', '-') ),
                 'scriptUri': (scripts_base_url ~ '/' ~ item.blob_path ~ '?' ~ container_sas.stdout),
                 'runAsSystem': true,
                 'runElevated': true
               }
             ]
           }}
-      loop: "{{ manifest.custom_scripts | default([]) }}"
+      loop: "{{ manifest.custom_scripts | default([], true) }}"
       when:
         - item.blob_path is defined
         - need_blob_scripts | bool
