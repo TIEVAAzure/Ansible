@@ -68,6 +68,16 @@
           - "manifest_full_path={{ manifest_full_path }}"
           - "ms_builtins_full_path={{ ms_builtins_full_path }}"
       changed_when: false
+    - name: Check if manifest file exists on disk
+      ansible.builtin.stat:
+        path: "{{ manifest_full_path }}"
+      register: mf_stat
+      changed_when: false
+
+    - name: Debug manifest stat
+      ansible.builtin.debug:
+        var: mf_stat.stat
+      changed_when: false
 
     - name: Load manifest YAML
       ansible.builtin.set_fact:
