@@ -3,15 +3,6 @@
 # Playbook: AVD - Build Customize From Manifest
 # ============================================================================
 # Purpose
-#   - Converts a customer manifest + built-ins map into an AIB customize[] array.
-# Output
-#   - Writes customize[] JSON to /tmp for the final Create/Run step to consume.
-# ============================================================================
-
-# ============================================================================
-# Playbook: AVD - Build Customize From Manifest
-# ============================================================================
-# Purpose
 #   - Reads a customer manifest (WHAT to run + ordering)
 #   - Reads the built-ins map (HOW to call Microsoft built-ins)
 #   - Outputs an AIB-compatible customize[] array in the correct order
@@ -57,13 +48,34 @@
         - "exclude:$_.Title -like '*Beta*'"
 
   tasks:
+    # ------------------------------------------------------------------------
+    # Resolve paths safely in AWX
+    #   - AWX runners can have a different working directory, so relative paths
+    #     may fail if used directly in lookup('file', ...).
+    #   - We anchor to playbook_dir + repo-relative path using path_join.
+    # ------------------------------------------------------------------------
+    - name: Resolve manifest + built-ins full paths (AWX-safe)
+      ansible.builtin.set_fact:
+        manifest_full_path: "{{ [playbook_dir, manifest_path] | path_join }}"
+        ms_builtins_full_path: "{{ [playbook_dir, ms_builtins_map_path] | path_join }}"
+      changed_when: false
+
+    # Optional debug (safe to leave in, but you can remove later)
+    - name: Debug resolved paths
+      ansible.builtin.debug:
+        msg:
+          - "playbook_dir={{ playbook_dir }}"
+          - "manifest_full_path={{ manifest_full_path }}"
+          - "ms_builtins_full_path={{ ms_builtins_full_path }}"
+      changed_when: false
+
     - name: Load manifest YAML
       ansible.builtin.set_fact:
-        manifest: "{{ lookup('ansible.builtin.file', (playbook_dir | path_join(manifest_path))) | from_yaml }}"
+        manifest: "{{ lookup('ansible.builtin.file', manifest_full_path) | from_yaml }}"
 
     - name: Load Microsoft built-ins mapping YAML
       ansible.builtin.set_fact:
-        ms_map: "{{ lookup('ansible.builtin.file', (playbook_dir | path_join(ms_builtins_map_path))) | from_yaml }}"
+        ms_map: "{{ lookup('ansible.builtin.file', ms_builtins_full_path) | from_yaml }}"
 
     - name: Detect whether any custom scripts use blob_path (requires SAS)
       ansible.builtin.set_fact:
@@ -174,7 +186,7 @@
             customize + [
               {
                 'type': 'PowerShell',
-                'name': (item.name | regex_replace('[^A-Za-z0-9\-]', '-') ),
+                'name': (item.name | regex_replace('[^A-Za-z0-9\\-]', '-') ),
                 'scriptUri': item.scriptUri,
                 'runAsSystem': true,
                 'runElevated': true
@@ -191,7 +203,7 @@
             customize + [
               {
                 'type': 'PowerShell',
-                'name': (item.name | regex_replace('[^A-Za-z0-9\-]', '-') ),
+                'name': (item.name | regex_replace('[^A-Za-z0-9\\-]', '-') ),
                 'scriptUri': (scripts_base_url ~ '/' ~ item.blob_path ~ '?' ~ container_sas.stdout),
                 'runAsSystem': true,
                 'runElevated': true
