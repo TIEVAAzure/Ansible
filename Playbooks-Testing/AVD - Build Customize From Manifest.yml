@@ -59,11 +59,11 @@
   tasks:
     - name: Load manifest YAML
       ansible.builtin.set_fact:
-        manifest: "{{ lookup('ansible.builtin.file', manifest_path) | from_yaml }}"
+        manifest: "{{ lookup('ansible.builtin.file', (playbook_dir | path_join(manifest_path))) | from_yaml }}"
 
     - name: Load Microsoft built-ins mapping YAML
       ansible.builtin.set_fact:
-        ms_map: "{{ lookup('ansible.builtin.file', ms_builtins_map_path) | from_yaml }}"
+        ms_map: "{{ lookup('ansible.builtin.file', (playbook_dir | path_join(ms_builtins_map_path))) | from_yaml }}"
 
     - name: Detect whether any custom scripts use blob_path (requires SAS)
       ansible.builtin.set_fact:

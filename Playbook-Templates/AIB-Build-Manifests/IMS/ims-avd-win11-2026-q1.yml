@@ -25,15 +25,15 @@ location: "uksouth"
 
 microsoft_builtins:
   must:
-    set_default_os_language: true
-    time_zone_redirection: true
-    disable_storage_sense: true
-    install_fslogix: true
-    configure_rdp_shortpath: true
-    install_multimedia_redirection: true
-    configure_windows_optimizations: true
-    remove_microsoft_office_applications: true
-    apply_windows_updates: true   # Use AIB WindowsUpdate customizer (not PowerShell)
+    set_default_os_language: false
+    time_zone_redirection: false
+    disable_storage_sense: false
+    install_fslogix: false
+    configure_rdp_shortpath: false
+    install_multimedia_redirection: false
+    configure_windows_optimizations: false
+    remove_microsoft_office_applications: false
+    apply_windows_updates: false   # Use AIB WindowsUpdate customizer (not PowerShell)
 
   optional:
     install_languages: false
@@ -101,14 +101,3 @@ windows_optimizations:
 # GitHub Raw URL pattern:
 #   https://raw.githubusercontent.com/<ORG>/<REPO>/<BRANCH>/<PATH_IN_REPO>
 custom_scripts:
-  - name: "AdobeReaderDC"
-    scriptUri: "https://raw.githubusercontent.com/<ORG>/<REPO>/<BRANCH>/AVD-Scripts/Applications/AVD-AIB-AdobeReaderDC-Update.ps1"
-
-  - name: "8x8-Update"
-    scriptUri: "https://raw.githubusercontent.com/<ORG>/<REPO>/<BRANCH>/AVD-Scripts/Applications/AVD-AIB-8x8-Update.ps1"
-
-  - name: "AVD-AIB-3rdParty-Download"
-    scriptUri: "https://raw.githubusercontent.com/<ORG>/<REPO>/<BRANCH>/AVD-Scripts/Customer/IMS/AVD-AIB-3rdParty-Download.ps1"
-
-  - name: "AVD-AIB-AppInstalls"
-    scriptUri: "https://raw.githubusercontent.com/<ORG>/<REPO>/<BRANCH>/AVD-Scripts/Customer/IMS/AVD-AIB-AppInstalls.ps1"
