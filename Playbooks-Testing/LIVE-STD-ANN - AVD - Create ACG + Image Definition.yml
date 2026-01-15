@@ -2,6 +2,16 @@
 # ============================================================================
 # Playbook: AVD - Create Azure Compute Gallery + Image Definition
 # ============================================================================
+# Purpose
+#   - Creates (or ensures) an Azure Compute Gallery and an Image Definition.
+# Notes
+#   - Standard vars: gallery_rg, location, gallery_name, image_definition_name,
+#                   sig_publisher, sig_offer, sig_sku, hyper_v_generation, deployment_name
+#   - Compatibility mapping keeps legacy vars working (rg_name, image_publisher/offer/sku).
+# ============================================================================
+# ============================================================================
+# Playbook: AVD - Create Azure Compute Gallery + Image Definition
+# ============================================================================
 # What this does
 #   - Creates (or ensures) an Azure Compute Gallery (ACG / SIG)
 #   - Creates (or ensures) an Image Definition (e.g. avd_win11ms_standard)
@@ -30,12 +40,29 @@
   hosts: localhost
   connection: local
   gather_facts: false
+
+  pre_tasks:
+    # ------------------------------------------------------------------------
+    # Compatibility mapping (keeps older AWX templates working)
+    # ------------------------------------------------------------------------
+    # Standard vars for AVD Gallery:
+    #   gallery_rg, location, gallery_name, image_definition_name
+    #   sig_publisher, sig_offer, sig_sku, hyper_v_generation, deployment_name
+    # Legacy vars still accepted:
+    #   rg_name, image_publisher, image_offer, image_sku
+    - name: Map legacy vars to standard vars (if standard not set)
+      ansible.builtin.set_fact:
+        gallery_rg: "{{ gallery_rg | default(rg_name | default('')) }}"
+        sig_publisher: "{{ sig_publisher | default(image_publisher | default('')) }}"
+        sig_offer: "{{ sig_offer | default(image_offer | default('')) }}"
+        sig_sku: "{{ sig_sku | default(image_sku | default('')) }}"
+      changed_when: false
   collections:
     - azure.azcollection
 
   vars:
     # Resource group where gallery + image definition will live
-    rg_name: "rg-mg-learn-uksouth-001"
+    gallery_rg: "rg-mg-learn-uksouth-001"
     location: "uksouth"
 
     # IMPORTANT: Gallery name cannot contain dashes
@@ -45,9 +72,9 @@
     image_definition_name: "avd_win11ms_standard"
 
     # Metadata (informational only) - MUST match allowed characters
-    image_publisher: "CloudOpsTIEVA"      # no spaces
-    image_offer: "AVD-Standard"           # hyphen ok
-    image_sku: "win11-multisession"       # hyphen ok
+    sig_publisher: "CloudOpsTIEVA"      # no spaces
+    sig_offer: "AVD-Standard"           # hyphen ok
+    sig_sku: "win11-multisession"       # hyphen ok
 
     # Windows 11 = Gen2
     hyper_v_generation: "V2"
@@ -63,7 +90,7 @@
     # -------------------------------------------------------------------
     - name: Deploy gallery + image definition
       azure_rm_deployment:
-        resource_group: "{{ rg_name }}"
+        resource_group: "{{ gallery_rg }}"
         location: "{{ location }}"
         name: "{{ deployment_name }}"
         state: present
@@ -120,11 +147,11 @@
           imageDefinitionName:
             value: "{{ image_definition_name }}"
           publisher:
-            value: "{{ image_publisher }}"
+            value: "{{ sig_publisher }}"
           offer:
-            value: "{{ image_offer }}"
+            value: "{{ sig_offer }}"
           sku:
-            value: "{{ image_sku }}"
+            value: "{{ sig_sku }}"
           hyperVGeneration:
             value: "{{ hyper_v_generation }}"
 
@@ -136,4 +163,4 @@
         msg:
           - "Compute Gallery ensured: {{ gallery_name }}"
           - "Image Definition ensured: {{ image_definition_name }}"
-          - "RG: {{ rg_name }} | Location: {{ location }}"
+          - "RG: {{ gallery_rg }} | Location: {{ location }}"

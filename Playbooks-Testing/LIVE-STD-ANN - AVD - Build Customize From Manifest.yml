@@ -3,6 +3,15 @@
 # Playbook: AVD - Build Customize From Manifest
 # ============================================================================
 # Purpose
+#   - Converts a customer manifest + built-ins map into an AIB customize[] array.
+# Output
+#   - Writes customize[] JSON to /tmp for the final Create/Run step to consume.
+# ============================================================================
+
+# ============================================================================
+# Playbook: AVD - Build Customize From Manifest
+# ============================================================================
+# Purpose
 #   - Reads a customer manifest (WHAT to run + ordering)
 #   - Reads the built-ins map (HOW to call Microsoft built-ins)
 #   - Outputs an AIB-compatible customize[] array in the correct order

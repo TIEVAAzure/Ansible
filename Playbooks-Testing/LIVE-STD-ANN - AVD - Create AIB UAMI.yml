@@ -1,6 +1,16 @@
 ---
 # ============================================================================
 # Playbook: AVD - Create AIB User Assigned Managed Identity (UAMI)
+# ============================================================================
+# Purpose
+#   - Creates (or ensures) the UAMI used by Azure Image Builder.
+#   - Assigns RBAC on staging RG + image definition for publishing.
+# Notes
+#   - Standard vars already used in this playbook.
+#   - Compatibility mapping included for older templates if required.
+# ============================================================================
+# ============================================================================
+# Playbook: AVD - Create AIB User Assigned Managed Identity (UAMI)
 # Version: v2 (standardised variables + corrected scopes)
 # ============================================================================
 # What this playbook does
@@ -34,6 +44,20 @@
 # ============================================================================
 - hosts: localhost
   gather_facts: false
+
+  pre_tasks:
+    # ------------------------------------------------------------------------
+    # Compatibility mapping (keeps older AWX templates working)
+    # ------------------------------------------------------------------------
+    # Standard vars:
+    #   identity_rg, location, uami_name, staging_rg, gallery_rg, gallery_name, image_definition_name
+    # Legacy vars still accepted (if you had older playbooks):
+    #   rg_name (identity_rg), gallery_identity_rg (gallery_rg)
+    - name: Map legacy vars to standard vars (if standard not set)
+      ansible.builtin.set_fact:
+        identity_rg: "{{ identity_rg | default(rg_name | default('')) }}"
+        gallery_rg: "{{ gallery_rg | default(gallery_identity_rg | default('')) }}"
+      changed_when: false
 
   vars:
     # ------------------------------------------------------------
