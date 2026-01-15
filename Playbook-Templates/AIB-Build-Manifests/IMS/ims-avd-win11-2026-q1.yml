@@ -1,17 +1,28 @@
-# AIB Build Manifest (IMS - AVD Win11 - 2026 Q1)
-# Controls:
-# - Which Microsoft built-ins run (must/optional)
-# - Any parameter values required by those built-ins (GUI dropdown equivalents)
-# - Which of your custom scripts run from blob (order matters)
-
+# ============================================================================
+# AIB Build Manifest (Customer-specific)
+# ============================================================================
+# File: ims-avd-win11-2026-q1.yml
+#
+# Purpose
+#   - Defines ONE image build version for ONE customer.
+#   - Easy to review and diff (Git-friendly).
+#
+# Controls
+#   1) Which Microsoft built-ins run (must vs optional)
+#   2) Parameter values for built-ins (GUI dropdown equivalents)
+#   3) Custom scripts (ordered) run after built-ins
+#
+# Custom script reference styles
+#   A) scriptUri (recommended for simplified demo; mirrors Microsoft built-ins)
+#      - Example: GitHub "Raw" URL to a .ps1 file
+#      - Requires outbound internet access from the AIB build VM
+#   B) blob_path (private storage + SAS) for locked-down environments
+# ============================================================================
 manifest_version: 1
 customer: "IMS"
 image_version: "2026-Q1"
 location: "uksouth"
 
-# ----------------------------
-# Microsoft built-in customizers
-# ----------------------------
 microsoft_builtins:
   must:
     set_default_os_language: true
@@ -22,7 +33,7 @@ microsoft_builtins:
     install_multimedia_redirection: true
     configure_windows_optimizations: true
     remove_microsoft_office_applications: true
-    apply_windows_updates: true
+    apply_windows_updates: true   # Use AIB WindowsUpdate customizer (not PowerShell)
 
   optional:
     install_languages: false
@@ -33,16 +44,14 @@ microsoft_builtins:
 # ----------------------------
 # Built-in parameters (GUI dropdown equivalents)
 # ----------------------------
-
 os_settings:
   default_os_language: "en-GB"
   install_languages:
     - "en-GB"
 
-# IMPORTANT:
-# You asked to allow this to be BLANK.
-# Leave profile_path as "" and your updated avd-ms-builtins.yml should skip passing it.
 fslogix_settings:
+  # Leave blank if you don't want to enforce it at build-time.
+  # Mapping must omit passing empty parameters.
   profile_path: ""
   vhd_size_mb: 30000
 
@@ -61,12 +70,9 @@ office_settings:
     - "Excel"
     - "Access"
 
-# Only used if enable_screen_capture_protection: true
 screen_capture_settings:
   block_option: "BlockClient"
 
-# Only used if configure_session_timeouts: true
-# Convention: 0 = Never (your mapping/playbook should translate if needed)
 session_timeouts:
   disconnected_minutes: 30
   idle_minutes: 360
@@ -86,26 +92,23 @@ windows_optimizations:
     - "Autologgers"
 
 # ----------------------------
-# Custom scripts (from your blob container)
-# Order matters: these run top -> bottom
-# blob_path is RELATIVE to the image_version prefix
-# Example final URI becomes:
-# https://<sa>.blob.core.windows.net/<container>/<image_version>/<blob_path>?<sas>
+# Custom scripts (ordered)
 # ----------------------------
+# Use ONE of:
+#   - scriptUri: direct URI to the PS1 (e.g. GitHub Raw URL)
+#   - blob_path: relative path under <image_version>/ in storage container
+#
+# GitHub Raw URL pattern:
+#   https://raw.githubusercontent.com/<ORG>/<REPO>/<BRANCH>/<PATH_IN_REPO>
 custom_scripts:
-  # Generic scripts
-  # (leave empty for now)
-
-  # Application installs
   - name: "AdobeReaderDC"
-    blob_path: "Applications/AVD-AIB-AdobeReaderDC-Update.ps1"
+    scriptUri: "https://raw.githubusercontent.com/<ORG>/<REPO>/<BRANCH>/AVD-Scripts/Applications/AVD-AIB-AdobeReaderDC-Update.ps1"
 
   - name: "8x8-Update"
-    blob_path: "Applications/AVD-AIB-8x8-Update.ps1"
+    scriptUri: "https://raw.githubusercontent.com/<ORG>/<REPO>/<BRANCH>/AVD-Scripts/Applications/AVD-AIB-8x8-Update.ps1"
 
-  # Customer scripts
   - name: "AVD-AIB-3rdParty-Download"
-    blob_path: "Customer/IMS/AVD-AIB-3rdParty-Download.ps1"
+    scriptUri: "https://raw.githubusercontent.com/<ORG>/<REPO>/<BRANCH>/AVD-Scripts/Customer/IMS/AVD-AIB-3rdParty-Download.ps1"
 
   - name: "AVD-AIB-AppInstalls"
-    blob_path: "Customer/IMS/AVD-AIB-AppInstalls.ps1"
+    scriptUri: "https://raw.githubusercontent.com/<ORG>/<REPO>/<BRANCH>/AVD-Scripts/Customer/IMS/AVD-AIB-AppInstalls.ps1"

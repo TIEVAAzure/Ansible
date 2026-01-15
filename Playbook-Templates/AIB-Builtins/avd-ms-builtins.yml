@@ -1,4 +1,23 @@
 ---
+# ============================================================================
+# File: avd-ms-builtins.yml
+# ============================================================================
+# Purpose
+#   - Translation layer between:
+#       Manifest keys (friendly flags like install_fslogix: true)
+#       and the real Azure Image Builder customizer blocks (type/name/scriptUri/inline).
+#
+# Rules of thumb
+#   - Manifest = WHAT we want for a customer + version
+#   - Built-ins map = HOW to invoke Microsoft’s built-in customizations
+#
+# Notes
+#   - Some built-ins require parameters (the same dropdowns you see in the portal).
+#     The manifest holds values; this map defines how they get passed.
+#   - Windows Updates is best done with the native AIB WindowsUpdate customizer.
+#   - FSLogix profile path must allow blank (do not pass empty string params).
+# ============================================================================
+
 ms_builtins:
   # Optional
   install_languages:

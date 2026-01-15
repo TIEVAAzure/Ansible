@@ -7,7 +7,6 @@
 # Notes
 #   - Standard vars: gallery_rg, location, gallery_name, image_definition_name,
 #                   sig_publisher, sig_offer, sig_sku, hyper_v_generation, deployment_name
-#   - Compatibility mapping keeps legacy vars working (rg_name, image_publisher/offer/sku).
 # ============================================================================
 # ============================================================================
 # Playbook: AVD - Create Azure Compute Gallery + Image Definition
@@ -41,22 +40,6 @@
   connection: local
   gather_facts: false
 
-  pre_tasks:
-    # ------------------------------------------------------------------------
-    # Compatibility mapping (keeps older AWX templates working)
-    # ------------------------------------------------------------------------
-    # Standard vars for AVD Gallery:
-    #   gallery_rg, location, gallery_name, image_definition_name
-    #   sig_publisher, sig_offer, sig_sku, hyper_v_generation, deployment_name
-    # Legacy vars still accepted:
-    #   rg_name, image_publisher, image_offer, image_sku
-    - name: Map legacy vars to standard vars (if standard not set)
-      ansible.builtin.set_fact:
-        gallery_rg: "{{ gallery_rg | default(rg_name | default('')) }}"
-        sig_publisher: "{{ sig_publisher | default(image_publisher | default('')) }}"
-        sig_offer: "{{ sig_offer | default(image_offer | default('')) }}"
-        sig_sku: "{{ sig_sku | default(image_sku | default('')) }}"
-      changed_when: false
   collections:
     - azure.azcollection
 
