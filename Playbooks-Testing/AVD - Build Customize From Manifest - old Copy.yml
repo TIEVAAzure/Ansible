@@ -9,10 +9,12 @@
 #   - Outputs customize[] JSON to /tmp inside the AWX runner
 #
 # AWX NOTE (IMPORTANT)
-#   - Playbooks may run from a subfolder (e.g. Playbooks-Testing/),
-#     while shared templates/manifests live elsewhere at repo root.
-#   - We anchor file lookups to the AWX project checkout root:
+#   - In AWX, playbooks often live in a subfolder (e.g. Playbooks-Testing),
+#     while shared manifests live in a sibling folder (e.g. Playbook-Templates)
+#     at the project root.
+#   - Therefore we anchor file lookups to the AWX project checkout root:
 #       /runner/project
+#     NOT to playbook_dir.
 #
 # Required variables (Survey)
 #   - manifest_path
@@ -24,10 +26,9 @@
 #   - container_name
 #   - sas_valid_hours
 #
-# Included Guards (2026-01-15)
-#   - Validates manifest structure early (fail fast, human-friendly)
-#   - Validates each custom script entry (name + exactly one of scriptUri/blob_path)
-#   - Handles custom_scripts being omitted/null/blank safely (default([], true))
+# Fix included (2026-01-15)
+#   - Handles custom_scripts being omitted, null, blank, or an empty list safely
+#     using default([], true) so loops never fail.
 # ============================================================================
 
 - name: AVD - Build Customize From Manifest
@@ -37,12 +38,12 @@
 
   vars:
     # ------------------------------------------------------------------------
-    # Defaults (override via AWX Survey / extra_vars)
+    # Defaults (these should be overridden by AWX Survey / extra_vars)
     # ------------------------------------------------------------------------
     manifest_path: "Playbook-Templates/AIB-Build-Manifests/IMS/ims-avd-win11-2026-q1.yml"
     ms_builtins_map_path: "Playbook-Templates/AIB-Builtins/avd-ms-builtins.yml"
 
-    # Storage/SAS settings (ONLY required if manifest uses custom_scripts.blob_path)
+    # Storage/SAS settings (only required if manifest uses custom_scripts.blob_path)
     sa_rg: ""
     sa_name: ""
     container_name: ""
@@ -76,7 +77,8 @@
           manifest_path, ms_builtins_map_path.
 
     # ------------------------------------------------------------------------
-    # Set AWX project root (where AWX checks out the git repo)
+    # Set the AWX project root. This is where AWX checks out the git repo.
+    # We anchor lookups here because playbooks may run from subfolders.
     # ------------------------------------------------------------------------
     - name: Set AWX project root
       ansible.builtin.set_fact:
@@ -139,61 +141,6 @@
     - name: Load Microsoft built-ins mapping YAML
       ansible.builtin.set_fact:
         ms_map: "{{ lookup('ansible.builtin.file', ms_builtins_full_path) | from_yaml }}"
-
-    # ------------------------------------------------------------------------
-    # Guards: Validate manifest schema (fail fast, human-friendly)
-    # ------------------------------------------------------------------------
-    - name: Validate manifest schema (required keys + expected structure)
-      ansible.builtin.assert:
-        that:
-          # Top-level
-          - manifest is mapping
-          - manifest.customer is defined
-          - manifest.image_version is defined
-          - manifest.microsoft_builtins is defined
-          - manifest.microsoft_builtins is mapping
-
-          # Built-ins structure
-          - manifest.microsoft_builtins.must is not defined
-            or manifest.microsoft_builtins.must is mapping
-          - manifest.microsoft_builtins.optional is not defined
-            or manifest.microsoft_builtins.optional is mapping
-
-          # Custom scripts structure (optional)
-          - manifest.custom_scripts is not defined
-            or manifest.custom_scripts is iterable
-        fail_msg: |
-          Manifest schema validation failed.
-
-          Expected minimum structure:
-
-          customer: <string>
-          image_version: <string>
-          microsoft_builtins:
-            must: <dict of booleans>      # optional section
-            optional: <dict of booleans>  # optional section
-          custom_scripts: <list>           # optional section
-
-          Please check the manifest YAML format.
-
-    - name: Validate each custom script entry (name + exactly one of scriptUri/blob_path)
-      ansible.builtin.assert:
-        that:
-          - item is mapping
-          - item.name is defined
-          - (item.scriptUri is defined) != (item.blob_path is defined)
-        fail_msg: |
-          Invalid custom_scripts entry:
-
-          {{ item | to_nice_yaml }}
-
-          Each custom script must:
-            - have a 'name'
-            - define EXACTLY ONE of:
-                scriptUri
-                blob_path
-      loop: "{{ manifest.custom_scripts | default([], true) }}"
-      when: (manifest.custom_scripts | default([], true) | length) > 0
 
     # ------------------------------------------------------------------------
     # Determine whether we need to generate a SAS token
@@ -314,8 +261,17 @@
 
     # ------------------------------------------------------------------------
     # Custom scripts
-    # Style A: scriptUri (no SAS)
-    # Style B: blob_path (requires SAS; scriptUri is constructed)
+    #
+    # Style A: scriptUri provided (no SAS needed)
+    #   - name: Something
+    #     scriptUri: "https://raw.githubusercontent.com/.../script.ps1"
+    #
+    # Style B: blob_path provided (requires SAS; scriptUri is constructed)
+    #   - name: Something
+    #     blob_path: "Customer/IMS/script.ps1"
+    #
+    # IMPORTANT:
+    #   - default([], true) ensures loop always receives a list (even if null/blank)
     # ------------------------------------------------------------------------
     - name: Add custom scripts with scriptUri (ordered)
       ansible.builtin.set_fact:
