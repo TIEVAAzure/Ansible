@@ -100,4 +100,4 @@ windows_optimizations:
 #
 # GitHub Raw URL pattern:
 #   https://raw.githubusercontent.com/<ORG>/<REPO>/<BRANCH>/<PATH_IN_REPO>
-custom_scripts:
+#custom_scripts:
