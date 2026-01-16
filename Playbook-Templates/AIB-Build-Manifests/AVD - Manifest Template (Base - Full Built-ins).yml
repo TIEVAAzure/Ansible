@@ -1,0 +1,69 @@
+---
+# ============================================================================
+# AVD AIB Build Manifest Template (Base - Full Built-ins List)
+# ============================================================================
+# How to use
+#   1) Copy this file for a new customer/environment OR for a new release.
+#   2) Update: customer, environment, image_version
+#   3) Toggle Microsoft built-ins as required per customer.
+#   4) Add custom_scripts only when required (or leave as []).
+
+# Notes
+#   - custom_scripts is OPTIONAL:
+#       * omit it entirely, OR set it to []
+#       * avoid leaving it as an empty key (custom_scripts:)
+#   - Each custom script must have:
+#       * name
+#       * EXACTLY ONE of: scriptUri OR blob_path
+#
+# Built-ins inventory
+#   - This template lists ALL available built-ins from: Playbook-Templates/AIB-Builtins/avd-ms-builtins.yml
+#   - Everything defaults to false so you can “turn on” per-customer requirements.
+# ============================================================================
+
+customer: "NEW-CUSTOMER"
+environment: "dev"              # dev / uat / prod (optional but helpful)
+image_version: "win11-2026-q1"   # recommend: win11-YYYY-qN or win11-YYYY-mm
+
+microsoft_builtins:
+  # -------------------------------------------------------------------------
+  # MUST built-ins
+  #
+  # Tip: keep this as the set you always want for this customer’s image line.
+  # -------------------------------------------------------------------------
+  must:
+    set_default_os_language: false
+    time_zone_redirection: false
+    disable_storage_sense: false
+    install_fslogix: false
+    configure_rdp_shortpath: false
+    install_multimedia_redirection: false
+    configure_windows_optimizations: false
+    remove_microsoft_office_applications: false
+    apply_windows_updates: false
+
+  # -------------------------------------------------------------------------
+  # OPTIONAL built-ins
+  #
+  # Tip: everything else can live here and be enabled as required.
+  # -------------------------------------------------------------------------
+  optional:
+    configure_session_timeouts: false
+    enable_kerberos_and_azure_ad: false
+    enable_screen_capture_protection: false
+    install_languages: false
+
+# ---------------------------------------------------------------------------
+# Custom scripts (optional)
+# ---------------------------------------------------------------------------
+# Option A (recommended): scriptUri (no SAS required)
+#custom_scripts:
+#  - name: "Install-Adobe-Reader"
+#    scriptUri: "https://raw.githubusercontent.com/<org>/<repo>/<branch>/AVD-Scripts/Customer/NEW-CUSTOMER/Install-Adobe-Reader.ps1"
+#
+# Option B: blob_path (requires SAS generation in the playbook)
+#custom_scripts:
+#  - name: "Install-8x8"
+#    blob_path: "Customer/NEW-CUSTOMER/Install-8x8.ps1"
+
+custom_scripts: []
