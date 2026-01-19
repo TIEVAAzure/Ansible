@@ -68,7 +68,7 @@
         -p {{ azure_client_secret }}
         --tenant {{ azure_tenant_id }}
         --output none
-      no_log: true
+      no_log: false
       changed_when: false
 
     - name: Set az subscription
