@@ -150,7 +150,8 @@
 
     # ---------------------------------------------------------------------
         # ---------------------------------------------------------------------
-    # Selection logic (survey-driven) - dash AND spacing normalised
+        # ---------------------------------------------------------------------
+    # Selection logic (survey-driven) - FIXED matching + dash/space normalised
     # ---------------------------------------------------------------------
     - name: Parse include/exclude lists into arrays
       ansible.builtin.set_fact:
@@ -175,18 +176,9 @@
       ansible.builtin.set_fact:
         available_template_names: "{{ (src_jt_rsp.json.results | default([])) | map(attribute='name') | list }}"
 
-    - name: Select job templates from source list according to include/exclude rules (strong normalisation)
+    - name: Normalise include/exclude patterns and build combined regex strings
       vars:
-        # Normalise any dash type and ANY spacing around it to " - "
-        # Also collapse whitespace.
-        name_norm: >-
-          {{
-            (item.name | string)
-            | regex_replace('\\s*[–—-]\\s*', ' - ')
-            | regex_replace('\\s+', ' ')
-            | trim
-          }}
-
+        # Normalise dash variants and any spacing around them to a canonical " - "
         include_norm: >-
           {{
             template_include_list
@@ -195,7 +187,6 @@
             | map('trim')
             | list
           }}
-
         exclude_norm: >-
           {{
             template_exclude_list
@@ -205,7 +196,7 @@
             | list
           }}
 
-        # Convert wildcard patterns to regex
+        # Convert wildcard -> safe regex (anchored)
         include_regexes: >-
           {{
             include_norm
@@ -215,7 +206,6 @@
             | map('regex_replace', '$', '$')
             | list
           }}
-
         exclude_regexes: >-
           {{
             exclude_norm
@@ -226,37 +216,95 @@
             | list
           }}
 
+        include_combined: >-
+          {{
+            (include_regexes | length) > 0
+            | ternary('(?:' ~ (include_regexes | join('|')) ~ ')', '')
+          }}
+        exclude_combined: >-
+          {{
+            (exclude_regexes | length) > 0
+            | ternary('(?:' ~ (exclude_regexes | join('|')) ~ ')', '')
+          }}
+
+      ansible.builtin.set_fact:
+        include_regexes: "{{ include_regexes }}"
+        exclude_regexes: "{{ exclude_regexes }}"
+        include_combined: "{{ include_combined }}"
+        exclude_combined: "{{ exclude_combined }}"
+
+    - name: Select job templates from source list according to include/exclude rules (CORRECT direction)
+      vars:
+        name_norm: >-
+          {{
+            (item.name | string)
+            | regex_replace('\\s*[–—-]\\s*', ' - ')
+            | regex_replace('\\s+', ' ')
+            | trim
+          }}
+
         include_hit: >-
           {{
             (copy_all_templates | bool)
             or
             (
-              (include_regexes | length) > 0
+              (include_combined | length) > 0
               and
-              (
-                include_regexes
-                | select('match', name_norm)
-                | list
-                | length
-              ) > 0
+              (name_norm is match(include_combined))
             )
           }}
 
         exclude_hit: >-
           {{
-            (exclude_regexes | length) > 0
+            (exclude_combined | length) > 0
             and
-            (
-              exclude_regexes
-              | select('match', name_norm)
-              | list
-              | length
-            ) > 0
+            (name_norm is match(exclude_combined))
           }}
 
       ansible.builtin.set_fact:
         selected_jt_raw: "{{ (selected_jt_raw | default([])) + ([item] if (include_hit and not exclude_hit) else []) }}"
       loop: "{{ src_jt_rsp.json.results | default([]) }}"
+
+    - name: Set selected template names (for reporting)
+      ansible.builtin.set_fact:
+        selected_template_names: "{{ (selected_jt_raw | default([])) | map(attribute='name') | list }}"
+
+    - name: Print selection summary
+      ansible.builtin.debug:
+        msg:
+          - "Selection summary:"
+          - "copy_all_templates={{ copy_all_templates }}, dry_run={{ dry_run }}"
+          - "include='{{ template_include | default('') }}' -> {{ include_regexes }}"
+          - "exclude='{{ template_exclude | default('') }}' -> {{ exclude_regexes }}"
+          - "Selected {{ selected_template_names | length }} template(s):"
+          - "{{ selected_template_names }}"
+      when: selected_template_names is defined
+
+    - name: If selection is empty, print first 50 available template names (to help pick patterns)
+      ansible.builtin.debug:
+        msg:
+          - "No templates matched selection."
+          - "You used: copy_all_templates={{ copy_all_templates }}, include='{{ template_include | default('') }}', exclude='{{ template_exclude | default('') }}'"
+          - "First 50 available template names:"
+          - "{{ available_template_names[:50] }}"
+      when: (selected_jt_raw | default([]) | length) == 0
+
+    - name: If dry_run and selection is empty, stop cleanly (no failure)
+      ansible.builtin.meta: end_play
+      when:
+        - (dry_run | bool)
+        - (selected_jt_raw | default([]) | length) == 0
+
+    - name: Guard - selection not empty (only fails when not dry_run)
+      ansible.builtin.assert:
+        that:
+          - (selected_jt_raw | length) > 0
+        fail_msg: >
+          No templates matched your selection.
+          copy_all_templates={{ copy_all_templates }},
+          include='{{ template_include | default('') }}',
+          exclude='{{ template_exclude | default('') }}'.
+      when: not (dry_run | bool)
 
     - name: Set selected template names (for reporting)
       ansible.builtin.set_fact:
