@@ -26,7 +26,7 @@
 
   vars:
     # ===== Shared Project (per-org duplicate) =====
-    shared_project_name: "TIEVAAzure/Ansible"
+    shared_project_name: "{{ target_org_name }} - TIEVAAzure-Ansible"
     shared_project_scm_url: "https://github.com/TIEVAAzure/Ansible"
     shared_project_scm_branch: "main"
 
@@ -41,7 +41,7 @@
       ansible_python_interpreter: "/usr/bin/python3"
 
     # ===== Optional Azure SP credential baseline =====
-    azure_arm_cred_name: "Azure-SP-Prod"
+    azure_arm_cred_name: "{{ target_org_name }} - Azure-SP-Prod"
 
     # Toggle (set via AWX Survey)
     create_azure_sp: false
