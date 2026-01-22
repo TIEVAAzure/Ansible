@@ -1,5 +1,5 @@
 ---
-# AWX – Org Bootstrap (Org + Project + Localhost + Optional Azure SP Credential)
+# AWX – Org Bootstrap (AWX OSS compatible)
 #
 # Creates/ensures:
 #  - Organization
@@ -7,22 +7,20 @@
 #  - Localhost inventory + localhost host (ansible_connection=local)
 #  - OPTIONAL: Azure Resource Manager credential named "Azure-SP-Prod"
 #
-# Controller auth:
-#  - Supports BOTH env var styles:
-#      CONTROLLER_HOST / CONTROLLER_OAUTH_TOKEN  (new)
-#      TOWER_HOST      / TOWER_OAUTH_TOKEN       (legacy)
+# IMPORTANT (AWX OSS):
+#  - AWX OSS does NOT reliably support per-Job-Template environment variables.
+#  - Therefore this playbook expects Controller connection details via EXTRA VARS.
 #
-# Recommended: set env vars on the Job Template (Environment Variables, JSON object):
+# Put these in the Job Template "Variables" box (JSON or YAML):
 #  {
-#    "TOWER_HOST": "https://tievaawx01.uksouth.cloudapp.azure.com",
-#    "TOWER_OAUTH_TOKEN": "xxx",
-#    "TOWER_VERIFY_SSL": "false"
+#    "tower_host": "https://tievaawx01.uksouth.cloudapp.azure.com",
+#    "tower_oauth_token": "REDACTED",
+#    "tower_verify_ssl": true
 #  }
 
 - name: "AWX: Org Bootstrap (Org + Project + Localhost + Optional Azure SP)"
   hosts: localhost
   gather_facts: false
-
   collections:
     - awx.awx
 
@@ -54,51 +52,27 @@
     azure_client_id: ""
     azure_client_secret: ""
 
-    # ===== Controller connection (future-proof) =====
-    controller_host: >-
-      {{
-        lookup('env', 'CONTROLLER_HOST')
-        | default(lookup('env', 'TOWER_HOST'), true)
-        | default(omit, true)
-      }}
-
-    controller_username: >-
-      {{
-        lookup('env', 'CONTROLLER_USERNAME')
-        | default(lookup('env', 'TOWER_USERNAME'), true)
-        | default(omit, true)
-      }}
-
-    controller_password: >-
-      {{
-        lookup('env', 'CONTROLLER_PASSWORD')
-        | default(lookup('env', 'TOWER_PASSWORD'), true)
-        | default(omit, true)
-      }}
-
-    controller_oauthtoken: >-
-      {{
-        lookup('env', 'CONTROLLER_OAUTH_TOKEN')
-        | default(lookup('env', 'TOWER_OAUTH_TOKEN'), true)
-        | default(omit, true)
-      }}
-
-    controller_validate_certs: false
+    # ===== Controller connection (AWX OSS: provided via extra vars) =====
+    # These are expected to be provided in the Job Template "Variables" box:
+    #   tower_host, tower_oauth_token, tower_verify_ssl
+    controller_host: "{{ tower_host }}"
+    controller_oauthtoken: "{{ tower_oauth_token }}"
+    controller_validate_certs: "{{ tower_verify_ssl | default(true) }}"
 
   tasks:
     # -------------------------------------------------------------------------
     # Guard rails: prevent localhost fallback
     # -------------------------------------------------------------------------
-    - name: Guard - ensure controller connection is available
+    - name: Guard - ensure controller connection is available (AWX OSS via extra vars)
       ansible.builtin.assert:
         that:
-          - controller_host is defined
-          - controller_host | length > 0
-          - controller_oauthtoken is defined or (controller_username is defined and controller_password is defined)
+          - tower_host is defined
+          - tower_host | length > 0
+          - tower_oauth_token is defined
+          - tower_oauth_token | length > 0
         fail_msg: >
-          AWX controller connection not configured.
-          Set TOWER_HOST/TOWER_OAUTH_TOKEN (preferred) or CONTROLLER_HOST/CONTROLLER_OAUTH_TOKEN
-          in the Job Template Environment Variables.
+          Controller connection not configured.
+          Provide tower_host and tower_oauth_token via the Job Template "Variables" box.
 
     # -------------------------------------------------------------------------
     # Required input: target org name (expected via Survey)
@@ -118,9 +92,7 @@
         name: "{{ target_org_name }}"
         state: present
         controller_host: "{{ controller_host }}"
-        controller_username: "{{ controller_username | default(omit) }}"
-        controller_password: "{{ controller_password | default(omit) }}"
-        controller_oauthtoken: "{{ controller_oauthtoken | default(omit) }}"
+        controller_oauthtoken: "{{ controller_oauthtoken }}"
         validate_certs: "{{ controller_validate_certs }}"
 
     # -------------------------------------------------------------------------
@@ -143,9 +115,7 @@
             | ternary(shared_project_scm_credential_name, omit)
           }}
         controller_host: "{{ controller_host }}"
-        controller_username: "{{ controller_username | default(omit) }}"
-        controller_password: "{{ controller_password | default(omit) }}"
-        controller_oauthtoken: "{{ controller_oauthtoken | default(omit) }}"
+        controller_oauthtoken: "{{ controller_oauthtoken }}"
         validate_certs: "{{ controller_validate_certs }}"
 
     - name: Trigger project update (optional sanity check)
@@ -155,9 +125,7 @@
         wait: true
         timeout: 600
         controller_host: "{{ controller_host }}"
-        controller_username: "{{ controller_username | default(omit) }}"
-        controller_password: "{{ controller_password | default(omit) }}"
-        controller_oauthtoken: "{{ controller_oauthtoken | default(omit) }}"
+        controller_oauthtoken: "{{ controller_oauthtoken }}"
         validate_certs: "{{ controller_validate_certs }}"
       when: not ansible_check_mode
 
@@ -170,9 +138,7 @@
         organization: "{{ target_org_name }}"
         state: present
         controller_host: "{{ controller_host }}"
-        controller_username: "{{ controller_username | default(omit) }}"
-        controller_password: "{{ controller_password | default(omit) }}"
-        controller_oauthtoken: "{{ controller_oauthtoken | default(omit) }}"
+        controller_oauthtoken: "{{ controller_oauthtoken }}"
         validate_certs: "{{ controller_validate_certs }}"
 
     - name: Ensure localhost host exists (local connection)
@@ -182,9 +148,7 @@
         state: present
         variables: "{{ localhost_host_vars | to_nice_yaml }}"
         controller_host: "{{ controller_host }}"
-        controller_username: "{{ controller_username | default(omit) }}"
-        controller_password: "{{ controller_password | default(omit) }}"
-        controller_oauthtoken: "{{ controller_oauthtoken | default(omit) }}"
+        controller_oauthtoken: "{{ controller_oauthtoken }}"
         validate_certs: "{{ controller_validate_certs }}"
 
     # -------------------------------------------------------------------------
@@ -222,9 +186,7 @@
           client: "{{ azure_client_id }}"
           secret: "{{ azure_client_secret }}"
         controller_host: "{{ controller_host }}"
-        controller_username: "{{ controller_username | default(omit) }}"
-        controller_password: "{{ controller_password | default(omit) }}"
-        controller_oauthtoken: "{{ controller_oauthtoken | default(omit) }}"
+        controller_oauthtoken: "{{ controller_oauthtoken }}"
         validate_certs: "{{ controller_validate_certs }}"
       when: azure_arm_ready | bool
 
@@ -235,8 +197,8 @@
       ansible.builtin.debug:
         msg:
           - "Org bootstrap completed for '{{ target_org_name }}'."
-          - "Project ensured: {{ shared_project_name }} ({{ shared_project_scm_branch }})"
-          - "Inventory ensured: {{ localhost_inventory_name }} (host: {{ localhost_host_name }})"
+          - "Project ensured: {{ shared_project_name }} (branch={{ shared_project_scm_branch }})"
+          - "Inventory ensured: {{ localhost_inventory_name }} (host={{ localhost_host_name }})"
           - "Azure SP requested: {{ create_azure_sp | bool }}"
           - "Azure SP created/updated: {{ azure_arm_ready | bool }}"
           - "Azure credential name: {{ azure_arm_cred_name }}"
