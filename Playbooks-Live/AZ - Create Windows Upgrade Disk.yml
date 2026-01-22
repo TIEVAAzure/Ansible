@@ -1,4 +1,29 @@
 ---
+# ============================================================================
+# Playbook: AZ – Create Windows Upgrade Disk
+#
+# Purpose
+#   - Creates a managed disk from the Microsoft "WindowsServerUpgrade" image
+#     using Azure CLI (az disk create)
+#   - Attaches the disk to a target VM (next available data disk LUN)
+#
+# Execution Environment (AWX) requirement
+#   - This playbook calls `az` directly.
+#   - It MUST run in a custom Execution Environment that includes Azure CLI.
+#   - The "AZ CLI login" pattern used here is reusable in other playbooks when
+#     you need Azure CLI instead of (or alongside) azure.azcollection.
+#
+# Reusable AZ CLI pattern (summary)
+#   1) Read AZURE_* env vars injected by the AWX Azure credential
+#   2) `az login --service-principal ...`
+#   3) `az account set --subscription ...`
+#   4) Run required `az ...` commands
+#
+# Notes
+#   - We isolate Azure CLI state in a job-local folder to avoid profile errors
+#     inside containers.
+# ============================================================================
+
 - name: Create and attach Windows Server upgrade media disk (zone-aware, path-validated, using az CLI)
   hosts: localhost
   connection: local
@@ -8,23 +33,30 @@
     - azure.azcollection
 
   vars:
-    rg_name: ""        # Resource group of the VM
-    vm_name: ""        # Name of the VM to upgrade
+    # -------------------------
+    # Required inputs (Survey)
+    # -------------------------
+    rg_name: ""          # Resource group of the VM
+    vm_name: ""          # Name of the VM to upgrade
 
-    # Current OS version:
+    # Current OS version (used only for validating the upgrade path):
     #   2012R2, 2016, 2019, 2022
     source_os: ""
 
     # Target upgrade SKU (WindowsServerUpgrade image SKU):
     #   server2016Upgrade, server2019Upgrade, server2022Upgrade, server2025Upgrade
-    upgrade_sku: "server2019Upgrade"
+    upgrade_sku: ""
 
     # Disk name for the upgrade media
     upgrade_disk_name: "ws-upgrade-{{ vm_name }}"
 
     # Managed disk SKU for the upgrade disk
-    upgrade_disk_sku: "Standard_LRS"
+    upgrade_disk_sku: ""
 
+    # Store AZ CLI state in an isolated location (important for AWX containers)
+    az_cli_config_dir: "/tmp/azcli"
+
+    # Allowed upgrade paths (basic guard rails)
     valid_upgrade_paths:
       "2012R2":
         - server2016Upgrade
@@ -41,7 +73,34 @@
         - server2025Upgrade
 
   tasks:
-# 0) Log in to Azure CLI using the same SP as azure.azcollection
+    # ------------------------------------------------------------------------
+    # Guard | Validate required inputs
+    # ------------------------------------------------------------------------
+    - name: Guard | Validate required inputs
+      ansible.builtin.assert:
+        that:
+          - rg_name | trim | length > 0
+          - vm_name | trim | length > 0
+          - source_os in valid_upgrade_paths
+          - upgrade_sku | trim | length > 0
+        fail_msg: >
+          Missing/invalid inputs. Ensure rg_name, vm_name, source_os and upgrade_sku are set.
+          source_os must be one of: {{ valid_upgrade_paths.keys() | list | join(', ') }}
+
+    # ------------------------------------------------------------------------
+    # Guard | Validate requested upgrade path (prevents unsupported jumps)
+    # ------------------------------------------------------------------------
+    - name: Guard | Validate requested upgrade path
+      ansible.builtin.assert:
+        that:
+          - upgrade_sku in valid_upgrade_paths[source_os]
+        fail_msg: >
+          Unsupported upgrade path: {{ source_os }} -> {{ upgrade_sku }}.
+          Allowed targets for {{ source_os }} are: {{ valid_upgrade_paths[source_os] | join(', ') }}
+
+    # ------------------------------------------------------------------------
+    # Step 1 | Read Azure credential env vars (same ones used by azure.azcollection)
+    # ------------------------------------------------------------------------
     - name: Read Azure credential env vars
       ansible.builtin.set_fact:
         azure_client_id: "{{ lookup('env', 'AZURE_CLIENT_ID') }}"
@@ -49,7 +108,7 @@
         azure_tenant_id: "{{ lookup('env', 'AZURE_TENANT') }}"
         azure_subscription_id: "{{ lookup('env', 'AZURE_SUBSCRIPTION_ID') }}"
 
-    - name: Ensure Azure env vars are present
+    - name: Guard | Ensure Azure env vars are present
       ansible.builtin.assert:
         that:
           - azure_client_id | length > 0
@@ -58,7 +117,16 @@
           - azure_subscription_id | length > 0
         fail_msg: >
           Missing one or more Azure env vars (AZURE_CLIENT_ID / AZURE_SECRET / AZURE_TENANT / AZURE_SUBSCRIPTION_ID).
-          Check your AWX Azure credential configuration.
+          Check the AWX Azure credential on this Job Template.
+
+    # ------------------------------------------------------------------------
+    # Step 2 | Login to Azure CLI (reusable pattern)
+    # ------------------------------------------------------------------------
+    - name: Ensure AZ CLI config folder exists
+      ansible.builtin.file:
+        path: "{{ az_cli_config_dir }}"
+        state: directory
+        mode: "0700"
 
     - name: az login with service principal
       ansible.builtin.command: >
@@ -68,25 +136,21 @@
         -p {{ azure_client_secret }}
         --tenant {{ azure_tenant_id }}
         --output none
+      environment:
+        AZURE_CONFIG_DIR: "{{ az_cli_config_dir }}"
       no_log: true
       changed_when: false
 
     - name: Set az subscription
       ansible.builtin.command: >
         az account set --subscription {{ azure_subscription_id }}
+      environment:
+        AZURE_CONFIG_DIR: "{{ az_cli_config_dir }}"
       changed_when: false
-    # 1) Validate upgrade path
-    - name: Validate requested upgrade path
-      ansible.builtin.assert:
-        that:
-          - source_os in valid_upgrade_paths
-          - upgrade_sku in valid_upgrade_paths[source_os]
-        fail_msg: >
-          Unsupported upgrade path: {{ source_os }} -> {{ upgrade_sku }}.
-          Allowed targets for {{ source_os }} are:
-          {{ valid_upgrade_paths[source_os] | join(', ') }}.
 
-    # 2) Get VM info
+    # ------------------------------------------------------------------------
+    # Step 3 | Fetch VM info (needed for location, zone and next free LUN)
+    # ------------------------------------------------------------------------
     - name: Get VM info
       azure.azcollection.azure_rm_virtualmachine_info:
         resource_group: "{{ rg_name }}"
@@ -100,7 +164,7 @@
         ((vm_info.vms | default([])) | length == 0) and
         ((vm_info.virtual_machines | default([])) | length == 0)
 
-    - name: Normalise VM object
+    - name: Normalise VM object (supports differing return field names across versions)
       ansible.builtin.set_fact:
         vm_obj: >-
           {{
@@ -109,7 +173,7 @@
             else (vm_info.virtual_machines | default([]) | first)
           }}
 
-    - name: Extract VM location, zone and data disk LUNs
+    - name: Extract VM location, zone and existing data disk LUNs
       ansible.builtin.set_fact:
         vm_location: "{{ vm_obj.location }}"
         vm_zones: "{{ vm_obj.zones | default([]) }}"
@@ -124,15 +188,15 @@
     - name: Show VM location and zone
       ansible.builtin.debug:
         msg: >
-          VM '{{ vm_name }}' is in '{{ vm_location }}',
-          zone: {{ vm_zone | default('None (no-zone VM)') }}.
+          VM '{{ vm_name }}' is in '{{ vm_location }}', zone: {{ vm_zone | default('None (no-zone VM)') }}.
 
-    # 3) Build zone arg list for az
+    # ------------------------------------------------------------------------
+    # Step 4 | Create upgrade media disk with Azure CLI (zone-aware)
+    # ------------------------------------------------------------------------
     - name: Build zone argument list for az disk create
       ansible.builtin.set_fact:
         zone_args: "{{ ['--zone', vm_zone] if (vm_zone is not none and (vm_zone | string | length) > 0) else [] }}"
 
-    # 4) Build full argv list for az disk create
     - name: Build argv for az disk create
       ansible.builtin.set_fact:
         az_disk_create_argv: >-
@@ -152,19 +216,21 @@
       ansible.builtin.debug:
         var: az_disk_create_argv
 
-    # 5) Create Windows Server upgrade media disk via az CLI
     - name: Create Windows Server upgrade media disk via az CLI
       ansible.builtin.command:
         argv: "{{ az_disk_create_argv }}"
+      environment:
+        AZURE_CONFIG_DIR: "{{ az_cli_config_dir }}"
       register: create_disk_cmd
-      changed_when: "'Succeeded' in create_disk_cmd.stdout or 'provisioningState\"' in (create_disk_cmd.stdout | default(''))"
-
+      changed_when: "'Succeeded' in (create_disk_cmd.stdout | default(''))"
 
     - name: Show disk creation output
       ansible.builtin.debug:
         var: create_disk_cmd.stdout
 
-    # 6) Choose free LUN
+    # ------------------------------------------------------------------------
+    # Step 5 | Attach disk to VM on next free LUN
+    # ------------------------------------------------------------------------
     - name: Choose next free LUN
       ansible.builtin.set_fact:
         upgrade_lun: "{{ (existing_luns | max + 1) if (existing_luns | length > 0) else 0 }}"
@@ -173,7 +239,6 @@
       ansible.builtin.debug:
         msg: "Upgrade disk will attach on LUN {{ upgrade_lun }}."
 
-    # 7) Attach upgrade disk
     - name: Attach upgrade disk to VM
       azure.azcollection.azure_rm_manageddisk:
         resource_group: "{{ rg_name }}"
@@ -186,5 +251,5 @@
     - name: Confirm upgrade disk attached
       ansible.builtin.debug:
         msg: >
-          Upgrade disk '{{ upgrade_disk_name }}' attached to VM '{{ vm_name }}'
-          on LUN {{ upgrade_lun }} (Zone={{ vm_zone | default('None') }}).
+          Upgrade disk '{{ upgrade_disk_name }}' attached to VM '{{ vm_name }}' on LUN {{ upgrade_lun }}
+          (Zone={{ vm_zone | default('None') }}).

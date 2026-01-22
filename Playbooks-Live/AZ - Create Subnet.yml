@@ -1,0 +1,38 @@
+---
+# AZ – Create Subnet
+# - Ensures a Subnet exists in an existing VNet (idempotent)
+# - Auth: azure.azcollection via AWX Azure credential
+
+- name: Create Subnet
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  collections:
+    - azure.azcollection
+
+  vars:
+    # AWX survey variables
+    rg_name: "{{ rg_name }}"
+    vnet_name: "{{ vnet_name }}"
+    subnet_name: "{{ subnet_name }}"
+    subnet_prefix: "{{ subnet_prefix | default('10.10.1.0/24') }}"
+
+  tasks:
+    - name: Guard | Validate required inputs
+      ansible.builtin.assert:
+        that:
+          - rg_name is defined and (rg_name | string | length) > 2
+          - vnet_name is defined and (vnet_name | string | length) > 1
+          - subnet_name is defined and (subnet_name | string | length) > 1
+          - subnet_prefix is defined and (subnet_prefix | string | length) > 5
+        fail_msg: >
+          Missing required variables (rg_name, vnet_name, subnet_name, subnet_prefix).
+
+    - name: Ensure subnet exists
+      azure_rm_subnet:
+        resource_group: "{{ rg_name }}"
+        virtual_network_name: "{{ vnet_name }}"
+        name: "{{ subnet_name }}"
+        address_prefix: "{{ subnet_prefix }}"
+        state: present

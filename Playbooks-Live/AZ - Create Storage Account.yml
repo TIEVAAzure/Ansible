@@ -1,0 +1,43 @@
+---
+# AZ – Create Storage Account
+# - Ensures a Storage Account exists (idempotent)
+# - Auth: azure.azcollection via AWX Azure credential
+# - Naming: Azure storage account name must be 3-24 chars, lowercase letters and numbers only
+
+- name: Create Storage Account
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  collections:
+    - azure.azcollection
+
+  vars:
+    # AWX survey variables
+    rg_name: "{{ rg_name }}"
+    sa_name: "{{ sa_name }}"
+    location: "{{ location | default('uksouth') }}"
+    sa_sku: "{{ sa_sku | default('Standard_LRS') }}"
+    sa_kind: "{{ sa_kind | default('StorageV2') }}"
+
+  tasks:
+    - name: Guard | Validate required inputs
+      ansible.builtin.assert:
+        that:
+          - rg_name is defined and (rg_name | string | length) > 2
+          - sa_name is defined and (sa_name | string | length) > 2
+          - sa_name is match("^[a-z0-9]{3,24}$")
+          - location is defined and (location | string | length) > 2
+        fail_msg: >
+          Missing required variables (rg_name, sa_name, location) or sa_name is invalid.
+          Storage account names must be 3-24 chars, lowercase letters and numbers only.
+
+    - name: Ensure storage account exists
+      azure_rm_storageaccount:
+        resource_group: "{{ rg_name }}"
+        name: "{{ sa_name }}"
+        location: "{{ location }}"
+        account_type: "{{ sa_sku }}"
+        kind: "{{ sa_kind }}"
+        https_only: true
+        state: present

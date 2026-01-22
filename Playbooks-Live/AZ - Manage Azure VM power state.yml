@@ -1,8 +1,16 @@
 ---
+# AZ - Manage Azure VM power state
+# - Start / Stop(deallocate) / Restart a list of VMs in the same RG
+# - Input: newline-separated VM names (AWX multi-line survey field works well)
+# - Auth: azure.azcollection via AWX Azure credential
+
 - name: Manage Azure VM power state (Start / Stop / Restart)
   hosts: localhost
   connection: local
   gather_facts: false
+
+  collections:
+    - azure.azcollection
 
   # In AWX you'll normally override these via a Survey:
   # - rg_name      -> text field
@@ -22,6 +30,15 @@
              | reject('equalto', '')
              | list }}
 
+
+    - name: Guard | Validate action and VM list
+      ansible.builtin.assert:
+        that:
+          - rg_name is defined and (rg_name | string | length) > 2
+          - vm_action is defined and (vm_action | lower) in ["start", "stop", "deallocate", "stopped", "restart", "reboot"]
+          - vm_list | length > 0
+        fail_msg: >
+          Provide rg_name, a valid vm_action, and at least one VM name (one per line).
     - name: Show selected VMs and action
       debug:
         msg:

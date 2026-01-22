@@ -1,34 +1,47 @@
 ---
+# AZ - Create Windows VM
+# - Create-only play: fails if the VM already exists to avoid accidental updates
+# - Optional toggles: create Public IP, create basic NSG, and wire them to the NIC
+# - Auth: azure.azcollection via AWX Azure credential (no Azure CLI required)
+#
+# Security note:
+#   Do not commit real passwords. Supply admin_password via AWX Survey (secret)
+#   or a credential, and consider using Key Vault in more mature setups.
+
 - name: Create a Windows Server VM in existing RG
   hosts: localhost
   connection: local
+  gather_facts: false
   collections:
     - azure.azcollection
 
   vars:
-    # Core settings (defaults - usually overridden by AWX survey)
-    rg_name: rg-mg-learn-uksouth-001
-    location: uksouth
+    # Toggle to prevent secrets (like admin_password) from being printed in job output
+    hide_secrets: "{{ hide_secrets | default(true) }}"
 
-    vm_name: ansible-test
+    # Core settings (defaults - usually overridden by AWX survey)
+    rg_name: ""
+    location: ""
+
+    vm_name: ""
 
     # NIC name derived from the VM name to keep things consistent
     nic_name: "nic-win-{{ vm_name }}"
 
     # Existing virtual network and subnet
-    vnet_name: GILO-DC-01-vnet      # existing VNet
-    subnet_name: default            # existing subnet
+    vnet_name: ""      # existing VNet
+    subnet_name: ""            # existing subnet
 
     # Local admin account on the VM
-    admin_username: azureuser
-    admin_password: "P@ssw0rd1234!!"   # override via AWX credential/survey
+    admin_username: ""
+    admin_password: ""   # override via AWX credential/survey
 
     # VM sizing and image
-    vm_size: Standard_D2as_v5
-    sku: 2022-datacenter
+    vm_size: ""
+    sku: ""
 
-    disk_size_gb: 128
-    managed_disk_type: Premium_LRS
+    disk_size_gb: ""
+    managed_disk_type: ""
 
     # Behaviour toggles
     vm_state: present                        # keep as "present" in this play
@@ -43,6 +56,24 @@
     delete_nic_with_vm: true
 
   tasks:
+
+    - name: Guard | Validate required inputs and safe choices
+      ansible.builtin.assert:
+        that:
+          - rg_name is defined and (rg_name | string | length) > 2
+          - location is defined and (location | string | length) > 2
+          - vm_name is defined and (vm_name | string | length) > 1
+          - vnet_name is defined and (vnet_name | string | length) > 1
+          - subnet_name is defined and (subnet_name | string | length) > 1
+          - vm_state | lower == "present"
+          - public_ip_mode | lower in ["none", "new"]
+          - nsg_mode | lower in ["none", "basic"]
+          - admin_username is defined and (admin_username | string | length) > 1
+          - admin_password is defined and (admin_password | string | length) >= 10
+        fail_msg: >
+          Missing required variables or invalid options. In AWX, provide values via Survey and store admin_password as a secret.
+
+
 
     - name: Check if VM already exists
       azure.azcollection.azure_rm_virtualmachine_info:
@@ -139,6 +170,7 @@
     # -----------------------------
 
     - name: Ensure Windows VM is present
+      no_log: "{{ hide_secrets | bool }}"
       azure.azcollection.azure_rm_virtualmachine:
         resource_group: "{{ rg_name }}"
         name: "{{ vm_name }}"

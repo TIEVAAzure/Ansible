@@ -1,0 +1,32 @@
+---
+# AZ – Create Resource Group
+# - Ensures a Resource Group exists (idempotent)
+# - Auth: azure.azcollection via AWX Azure credential (no Azure CLI required)
+
+- name: Create Resource Group
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  collections:
+    - azure.azcollection
+
+  vars:
+    # AWX survey variables (example)
+    rg_name: "{{ rg_name | default('rg-mg-demo-uksouth-001') }}"
+    location: "{{ location | default('uksouth') }}"
+
+  tasks:
+    - name: Guard | Validate required inputs
+      ansible.builtin.assert:
+        that:
+          - rg_name is defined and (rg_name | string | length) > 2
+          - location is defined and (location | string | length) > 2
+        fail_msg: >
+          Missing rg_name or location. In AWX, set these via the Survey (or defaults).
+
+    - name: Ensure resource group exists
+      azure_rm_resourcegroup:
+        name: "{{ rg_name }}"
+        location: "{{ location }}"
+        state: present

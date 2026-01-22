@@ -1,4 +1,8 @@
 ---
+# AZ – Create Virtual Network
+# - Ensures a VNet exists in an existing Resource Group (idempotent)
+# - Auth: azure.azcollection via AWX Azure credential
+
 - name: Create Virtual Network
   hosts: localhost
   connection: local
@@ -15,6 +19,15 @@
     vnet_address_space: "{{ vnet_address_space | default('10.10.0.0/16') }}"
 
   tasks:
+    - name: Guard | Validate required inputs
+      ansible.builtin.assert:
+        that:
+          - rg_name is defined and (rg_name | string | length) > 2
+          - vnet_name is defined and (vnet_name | string | length) > 1
+          - location is defined and (location | string | length) > 2
+        fail_msg: >
+          Missing required variables (rg_name, vnet_name, location).
+
     - name: Ensure VNet exists
       azure_rm_virtualnetwork:
         resource_group: "{{ rg_name }}"
