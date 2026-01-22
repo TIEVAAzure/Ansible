@@ -58,6 +58,15 @@
     controller_validate_certs: false
 
   tasks:
+    - name: Guard - ensure controller connection is available
+      ansible.builtin.assert:
+        that:
+          - lookup('env', 'TOWER_HOST') or lookup('env', 'CONTROLLER_HOST')
+          - lookup('env', 'TOWER_OAUTH_TOKEN') or lookup('env', 'CONTROLLER_OAUTH_TOKEN')
+        fail_msg: >
+          AWX controller connection details not found.
+          Set TOWER_HOST/TOWER_OAUTH_TOKEN (preferred) or CONTROLLER_HOST/CONTROLLER_OAUTH_TOKEN
+          in the Job Template environment variables.
     # -------------------------------------------------------------------------
     # Org
     # -------------------------------------------------------------------------
