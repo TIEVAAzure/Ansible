@@ -142,7 +142,7 @@
         name: "{{ localhost_host_name }}"
         inventory: "{{ localhost_inventory_name }}"
         state: present
-        variables: "{{ localhost_host_vars | to_nice_yaml }}"
+        variables: "{{ localhost_host_vars }}"
         controller_host: "{{ controller_host }}"
         controller_oauthtoken: "{{ controller_oauthtoken }}"
         validate_certs: "{{ controller_validate_certs }}"
