@@ -1,19 +1,18 @@
 ---
-- name: "AWX: Copy Job Templates + Surveys (Bootstrap-aware, with Dry Run)"
+- name: "AWX: Copy Job Templates + Surveys (Bootstrap-aware, selectable, with Dry Run)"
   hosts: localhost
   gather_facts: false
   collections:
     - awx.awx
 
   vars:
-    # ====== DRY RUN ======
-    # true  = no changes, just report what would happen
-    # false = perform the copy
-    dry_run: true
-
-    # ====== Required survey vars ======
-    # source_org_name: "Master"
-    # target_org_name: "ORG_test"
+    # ===== Survey-driven toggles =====
+    # dry_run: true|false
+    # copy_all_templates: true|false
+    # template_include: "AZ – *,AVD*"
+    # template_exclude: "Test*,Old*"
+    # allow_only_localhost_inventory_mapping: true|false
+    # create_templates_without_missing_creds: true|false
 
     # ===== Shared naming (must match your bootstrap naming) =====
     target_project_name: "{{ target_org_name }} - TIEVAAzure-Ansible"
@@ -22,11 +21,7 @@
     # Source inventory name used in the MASTER templates
     source_localhost_inventory_name: "Localhost"
 
-    # Behaviour toggles (survey)
-    allow_only_localhost_inventory_mapping: true
-    create_templates_without_missing_creds: true
-
-    # ===== Controller auth (you said these are already set by vars) =====
+    # ===== Controller auth (set by your JT vars, not survey) =====
     controller_host: "{{ tower_host }}"
     controller_oauthtoken: "{{ tower_oauth_token }}"
     controller_validate_certs: "{{ (tower_verify_ssl | default(true)) | bool }}"
@@ -48,7 +43,7 @@
         that:
           - tower_host is defined and (tower_host | length > 0)
           - tower_oauth_token is defined and (tower_oauth_token | length > 0)
-        fail_msg: "tower_host / tower_oauth_token not set."
+        fail_msg: "tower_host / tower_oauth_token not set on the Job Template."
 
     - name: Guard - org vars present
       ansible.builtin.assert:
@@ -56,6 +51,15 @@
           - source_org_name is defined and (source_org_name | length > 0)
           - target_org_name is defined and (target_org_name | length > 0)
         fail_msg: "source_org_name and target_org_name are required."
+
+    - name: Guard - survey toggles present
+      ansible.builtin.assert:
+        that:
+          - dry_run is defined
+          - copy_all_templates is defined
+          - allow_only_localhost_inventory_mapping is defined
+          - create_templates_without_missing_creds is defined
+        fail_msg: "Missing one or more survey toggles: dry_run, copy_all_templates, allow_only_localhost_inventory_mapping, create_templates_without_missing_creds."
 
     # ---------------------------------------------------------------------
     # Lookups via AWX API (uri) - no awx.awx.controller_api required
@@ -144,16 +148,95 @@
         return_content: true
       register: src_jt_rsp
 
+    # ---------------------------------------------------------------------
+    # Selection logic (survey-driven)
+    # ---------------------------------------------------------------------
+    - name: Parse include/exclude lists into arrays
+      ansible.builtin.set_fact:
+        template_include_list: >-
+          {{
+            (template_include | default('') | string)
+            | split(',')
+            | map('trim')
+            | reject('equalto','')
+            | list
+          }}
+        template_exclude_list: >-
+          {{
+            (template_exclude | default('') | string)
+            | split(',')
+            | map('trim')
+            | reject('equalto','')
+            | list
+          }}
+
+    - name: Select job templates from source list according to include/exclude rules
+      vars:
+        _name: "{{ item.name }}"
+
+        include_hit: >-
+          {{
+            (copy_all_templates | bool)
+            or
+            (
+              (template_include_list | length) > 0
+              and
+              (
+                template_include_list
+                | map('regex_escape')
+                | map('regex_replace', '\\*', '.*')
+                | map('regex_replace', '^', '^')
+                | map('regex_replace', '$', '$')
+                | select('match', _name)
+                | list
+                | length
+              ) > 0
+            )
+          }}
+
+        exclude_hit: >-
+          {{
+            (template_exclude_list | length) > 0
+            and
+            (
+              template_exclude_list
+              | map('regex_escape')
+              | map('regex_replace', '\\*', '.*')
+              | map('regex_replace', '^', '^')
+              | map('regex_replace', '$', '$')
+              | select('match', _name)
+              | list
+              | length
+            ) > 0
+          }}
+
+      ansible.builtin.set_fact:
+        selected_jt_raw: "{{ (selected_jt_raw | default([])) + ([item] if (include_hit and not exclude_hit) else []) }}"
+      loop: "{{ src_jt_rsp.json.results | default([]) }}"
+
+    - name: Set selected template names (for reporting)
+      ansible.builtin.set_fact:
+        selected_template_names: "{{ (selected_jt_raw | default([])) | map(attribute='name') | list }}"
+
+    - name: Guard - selection not empty
+      ansible.builtin.assert:
+        that:
+          - (selected_jt_raw | length) > 0
+        fail_msg: >
+          No templates matched your selection.
+          copy_all_templates={{ copy_all_templates }},
+          include='{{ template_include | default('') }}',
+          exclude='{{ template_exclude | default('') }}'.
+
+    # ---------------------------------------------------------------------
+    # Build a minimal plan summary (missing creds + inventory mapping)
+    # ---------------------------------------------------------------------
     - name: Initialise reporting
       ansible.builtin.set_fact:
-        plan_templates: []
         plan_missing_creds: {}
         plan_inventory_not_mapped: []
 
-    # ---------------------------------------------------------------------
-    # Build a plan (always runs, even in dry_run)
-    # ---------------------------------------------------------------------
-    - name: Build copy plan
+    - name: Build summary for selected templates
       vars:
         src_inv_name: "{{ item.summary_fields.inventory.name | default('') }}"
         inv_is_localhost: "{{ src_inv_name == source_localhost_inventory_name }}"
@@ -161,23 +244,7 @@
         src_cred_names: "{{ (item.summary_fields.credentials | default([])) | map(attribute='name') | list }}"
         missing_cred_names: "{{ src_cred_names | reject('in', target_cred_names) | list }}"
 
-        mapped_inventory_name: >-
-          {{
-            inv_is_localhost
-            | ternary(target_localhost_inventory_name, '')
-          }}
-
       ansible.builtin.set_fact:
-        plan_templates: "{{ plan_templates + [ {
-          'name': item.name,
-          'playbook': item.playbook,
-          'source_inventory': src_inv_name,
-          'mapped_inventory': mapped_inventory_name,
-          'source_creds': src_cred_names,
-          'missing_creds': missing_cred_names,
-          'survey_enabled': (item.survey_enabled | default(false)),
-          'has_survey_spec': (item.survey_spec is defined)
-        } ] }}"
         plan_missing_creds: "{{ plan_missing_creds | combine( (missing_cred_names | length > 0) | ternary({ item.name: missing_cred_names }, {}), recursive=true ) }}"
         plan_inventory_not_mapped: >-
           {{
@@ -191,40 +258,51 @@
               | ternary([item.name], [])
             )
           }}
-      loop: "{{ src_jt_rsp.json.results | default([]) }}"
+      loop: "{{ selected_jt_raw | default([]) }}"
 
-    - name: DRY RUN - report what will be copied
+    # ---------------------------------------------------------------------
+    # DRY RUN reporting (names only)
+    # ---------------------------------------------------------------------
+    - name: Report summary
       ansible.builtin.debug:
         msg:
           - "DRY RUN = {{ dry_run }}"
-          - "Source org: {{ source_org_name }} (id={{ source_org_id }})"
-          - "Target org: {{ target_org_name }} (id={{ target_org_id }})"
+          - "Source org: {{ source_org_name }}"
+          - "Target org: {{ target_org_name }}"
           - "Target project: {{ target_project_name }}"
           - "Target inventory: {{ target_localhost_inventory_name }}"
-          - "Templates found in source: {{ plan_templates | length }}"
+          - "Selected templates: {{ selected_template_names | length }}"
           - "Templates with missing creds: {{ plan_missing_creds | length }}"
           - "Templates with inventory NOT mapped (phase 2): {{ plan_inventory_not_mapped | length }}"
 
-    - name: DRY RUN - list template plan (names + key mapping)
+    - name: List selected template names (dry run or apply)
       ansible.builtin.debug:
-        var: plan_templates
-      when: dry_run | bool
+        msg: "{{ selected_template_names }}"
+
+    - name: DRY RUN - show missing creds map (only if present)
+      ansible.builtin.debug:
+        var: plan_missing_creds
+      when:
+        - dry_run | bool
+        - (plan_missing_creds | length) > 0
+
+    - name: DRY RUN - show inventory not mapped list (only if present)
+      ansible.builtin.debug:
+        msg: "{{ plan_inventory_not_mapped }}"
+      when:
+        - dry_run | bool
+        - (plan_inventory_not_mapped | length) > 0
 
     # ---------------------------------------------------------------------
     # Apply changes (only when dry_run=false)
     # ---------------------------------------------------------------------
-    - name: Copy job templates into target org (apply)
+    - name: Copy selected job templates into target org (apply)
       vars:
         src_inv_name: "{{ item.summary_fields.inventory.name | default('') }}"
         inv_is_localhost: "{{ src_inv_name == source_localhost_inventory_name }}"
+
         src_cred_names: "{{ (item.summary_fields.credentials | default([])) | map(attribute='name') | list }}"
         missing_cred_names: "{{ src_cred_names | reject('in', target_cred_names) | list }}"
-
-        mapped_inventory_name: >-
-          {{
-            inv_is_localhost
-            | ternary(target_localhost_inventory_name, omit)
-          }}
 
         should_omit_inventory: >-
           {{
@@ -233,7 +311,15 @@
             and (not inv_is_localhost)
           }}
 
-        # Attach creds only if none missing, else omit
+        mapped_inventory_name: >-
+          {{
+            inv_is_localhost
+            | ternary(target_localhost_inventory_name, omit)
+          }}
+
+        # Credentials:
+        # - If any missing => omit (create template anyway if create_templates_without_missing_creds=true)
+        # - If none missing => attach by NAME
         creds_to_attach: >-
           {{
             ((missing_cred_names | length) == 0)
@@ -284,24 +370,23 @@
         survey_enabled: "{{ item.survey_enabled | default(false) }}"
         survey_spec: "{{ item.survey_spec | default(omit) }}"
 
-        # Credentials behaviour:
-        # - If creds missing => omit (template still created)
-        # - If none missing => attach by NAME
+        # Credential attach behaviour
         credentials: "{{ creds_to_attach }}"
 
         controller_host: "{{ controller_host }}"
         controller_oauthtoken: "{{ controller_oauthtoken }}"
         validate_certs: "{{ controller_validate_certs }}"
-      loop: "{{ src_jt_rsp.json.results | default([]) }}"
+
+      loop: "{{ selected_jt_raw | default([]) }}"
       when:
         - not (dry_run | bool)
-        - create_templates_without_missing_creds | bool or ((src_cred_names | reject('in', target_cred_names) | list) | length) == 0
+        - create_templates_without_missing_creds | bool or ((missing_cred_names | length) == 0)
 
     - name: Apply summary (only when dry_run=false)
       ansible.builtin.debug:
         msg:
           - "APPLY complete."
-          - "Templates processed: {{ src_jt_rsp.json.count | default(0) }}"
+          - "Templates selected: {{ selected_template_names | length }}"
           - "Missing creds (logged): {{ plan_missing_creds | length }}"
           - "Inventory not mapped (logged): {{ plan_inventory_not_mapped | length }}"
       when: not (dry_run | bool)
