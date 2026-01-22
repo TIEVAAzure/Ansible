@@ -161,11 +161,19 @@
             and (azure_client_secret | length > 0)
           }}
 
-    - name: Fail if create_azure_sp=true but required fields are missing
-      ansible.builtin.fail:
-        msg: >-
-          create_azure_sp=true but one or more required fields are missing:
-          azure_subscription_id, azure_tenant, azure_client_id, azure_client_secret
+    - name: Warn if create_azure_sp=true but required fields are missing (skip instead of fail)
+      ansible.builtin.debug:
+       msg:
+         - "Azure SP creation was requested (create_azure_sp=true) but required fields are missing."
+         - "Skipping Azure credential creation for now."
+         - "Missing: azure_subscription_id, azure_tenant, azure_client_id, azure_client_secret"
+      when:
+        - create_azure_sp | bool
+        - not azure_arm_ready | bool
+
+    - name: Force Azure SP creation toggle off when inputs are incomplete
+      ansible.builtin.set_fact:
+        azure_arm_ready: false
       when:
         - create_azure_sp | bool
         - not azure_arm_ready | bool
