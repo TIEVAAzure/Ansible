@@ -1,24 +1,28 @@
 ---
-# AWX – Copy Job Templates + Surveys Between Orgs (Phase 1)
+# AWX – Copy Job Templates + Surveys Between Orgs (Phase 1) - HYBRID CREDENTIALS
 #
 # Includes:
 #  1) Ensure TARGET org exists
 #  2) Ensure shared Project exists in TARGET org (duplicate per org, same repo/branch)
 #  3) Ensure Localhost inventory + localhost host exists in TARGET org
-#  4) Copy Job Templates from SOURCE org to TARGET org
-#     - Skips templates that reference missing deps (creds/inventory/EE)
-#  5) Copy Job Template Surveys (survey_spec)
+#  4) Copy Job Templates from SOURCE org to TARGET org (uses shared project)
+#  5) Copy Job Template Surveys
 #
-# Key behaviour:
-#  - No duplication: keyed by JT name + org.
-#  - sync_mode=true (default): destination JTs + surveys are UPDATED to match source (overwrites dest edits)
-#  - sync_mode=false: CREATE-ONLY (does not modify existing JTs/surveys)
+# HYBRID credential behaviour:
+#  - Job Templates are copied even if target org is missing some credentials
+#  - Only credentials that exist in the target org (matched by name) are attached
+#  - Missing credential names are logged in the summary report (per template)
 #
-# Notes:
-#  - GitHub repo is public (scm_credential omitted).
-#  - Credentials are NOT copied (templates referencing missing creds are skipped if enabled).
+# sync_mode:
+#  - true  = sync/update (destination JTs + surveys will be updated to match source)
+#  - false = create-only (does not modify existing destination JTs/surveys)
+#
+# Dependencies checked for skip/fail:
+#  - Inventory (if set on the JT)
+#  - Execution Environment (if set on the JT)
+# Credentials are NOT treated as hard dependencies in hybrid mode.
 
-- name: "AWX: Phase 1 copy (Org + Project + Localhost + Job Templates + Surveys)"
+- name: "AWX: Copy Job Templates + Surveys (Hybrid creds)"
   hosts: localhost
   gather_facts: false
 
@@ -46,16 +50,8 @@
       ansible_python_interpreter: "/usr/bin/python3"
 
     # ===== Copy behaviour =====
-    # sync_mode=true:
-    #   - Updates existing JTs/surveys in target to match source.
-    # sync_mode=false:
-    #   - Create-only (won't touch existing JTs/surveys).
     sync_mode: true
-
-    # If true, skip templates when dependencies are missing (creds/inv/EE)
-    # If false, fail fast on first missing dependency.
     skip_templates_missing_deps: true
-
     page_size: 200
 
     # ===== Controller connection =====
@@ -79,7 +75,9 @@
         controller_oauthtoken: "{{ controller_oauthtoken | default(omit) }}"
         validate_certs: "{{ controller_validate_certs }}"
 
-    # Resolve SOURCE org ID (for API filtering)
+    # -------------------------------------------------------------------------
+    # Resolve SOURCE org ID
+    # -------------------------------------------------------------------------
     - name: Lookup SOURCE org by name
       awx.awx.controller_api:
         host: "{{ controller_host | default(omit) }}"
@@ -167,7 +165,7 @@
         validate_certs: "{{ controller_validate_certs }}"
 
     # -------------------------------------------------------------------------
-    # Pre-flight: Build lookup lists in TARGET org (inventories, creds, EEs)
+    # Pre-flight: Build lookup name lists in TARGET org (inventories, creds, EEs)
     # -------------------------------------------------------------------------
     - name: Get TARGET inventories (first page)
       awx.awx.controller_api:
@@ -279,32 +277,35 @@
         jt_copied: []
         jt_skipped: []
         jt_surveys_applied: []
+        jt_missing_creds: []   # <--- hybrid credential report
 
     # -------------------------------------------------------------------------
     # Copy JT + Survey (per template)
     # -------------------------------------------------------------------------
-    - name: Copy Job Templates (and Surveys) into TARGET org
+    - name: Copy Job Templates (and Surveys) into TARGET org - Hybrid creds
       vars:
         jt_name: "{{ item.name }}"
         src_inventory_name: "{{ item.summary_fields.inventory.name | default('') }}"
         src_ee_name: "{{ item.summary_fields.execution_environment.name | default('') }}"
+
+        # Credentials on source JT
         src_cred_names: "{{ (item.summary_fields.credentials | default([])) | map(attribute='name') | list }}"
 
-        inv_ok: "{{ (src_inventory_name | length == 0) or (src_inventory_name in tgt_inventory_names) }}"
-        creds_ok: "{{ (src_cred_names | length == 0) or ((src_cred_names | difference(tgt_credential_names)) | length == 0) }}"
-        ee_ok: "{{ (src_ee_name | length == 0) or (src_ee_name in tgt_ee_names) }}"
-        deps_ok: "{{ inv_ok and creds_ok and ee_ok }}"
-
+        # HYBRID: only attach creds that exist in target org
+        creds_to_attach: "{{ src_cred_names | intersect(tgt_credential_names) }}"
         missing_creds: "{{ src_cred_names | difference(tgt_credential_names) }}"
+
+        # Hard dependency checks (inventory + EE only)
+        inv_ok: "{{ (src_inventory_name | length == 0) or (src_inventory_name in tgt_inventory_names) }}"
+        ee_ok: "{{ (src_ee_name | length == 0) or (src_ee_name in tgt_ee_names) }}"
+        deps_ok: "{{ inv_ok and ee_ok }}"
+
         skip_reason: >-
           {{
             (not inv_ok) | ternary('Missing inventory in target: ' ~ src_inventory_name, '')
-            ~ ((not inv_ok and not creds_ok) | ternary(' | ', ''))
-            ~ (not creds_ok) | ternary('Missing credential(s) in target: ' ~ (missing_creds | join(', ')), '')
-            ~ (((not inv_ok or not creds_ok) and not ee_ok) | ternary(' | ', ''))
+            ~ ((not inv_ok and not ee_ok) | ternary(' | ', ''))
             ~ (not ee_ok) | ternary('Missing EE in target: ' ~ src_ee_name, '')
           }}
-
       block:
         - name: Fail fast if deps missing and skipping disabled
           ansible.builtin.fail:
@@ -320,7 +321,7 @@
             - (deps_ok | bool) == false
             - (skip_templates_missing_deps | bool) == true
 
-        # Create/Update template in target, unless create-only mode and it already exists.
+        # Determine if JT already exists in target org (used for create-only mode)
         - name: Check if JT exists in TARGET org
           awx.awx.controller_api:
             host: "{{ controller_host | default(omit) }}"
@@ -339,10 +340,10 @@
         - name: Set JT exists flag
           ansible.builtin.set_fact:
             tgt_jt_exists: "{{ (tgt_jt_lookup.json.count | default(0) | int) > 0 }}"
-            tgt_jt_id: "{{ (tgt_jt_lookup.json.results[0].id | default('')) }}"
           when: deps_ok | bool
 
-        - name: Create/Update JT in TARGET org (sync mode OR not existing)
+        # Create/Update JT (sync mode OR if it doesn't exist yet)
+        - name: Create/Update JT in TARGET org (hybrid creds)
           awx.awx.job_template:
             name: "{{ jt_name }}"
             organization: "{{ target_org_name }}"
@@ -353,7 +354,9 @@
 
             inventory: "{{ (src_inventory_name | length > 0) | ternary(src_inventory_name, omit) }}"
             execution_environment: "{{ (src_ee_name | length > 0) | ternary(src_ee_name, omit) }}"
-            credentials: "{{ (src_cred_names | length > 0) | ternary(src_cred_names, omit) }}"
+
+            # HYBRID: attach only creds that exist in target org
+            credentials: "{{ (creds_to_attach | length > 0) | ternary(creds_to_attach, omit) }}"
 
             playbook: "{{ item.playbook }}"
             description: "{{ item.description | default('') }}"
@@ -365,7 +368,7 @@
             allow_simultaneous: "{{ item.allow_simultaneous | default(false) }}"
             extra_vars: "{{ item.extra_vars | default('') }}"
 
-            # Ask-on-launch flags (you said fine to keep)
+            # Ask-on-launch flags (kept as-is)
             ask_variables_on_launch: "{{ item.ask_variables_on_launch | default(false) }}"
             ask_limit_on_launch: "{{ item.ask_limit_on_launch | default(false) }}"
             ask_tags_on_launch: "{{ item.ask_tags_on_launch | default(false) }}"
@@ -395,8 +398,15 @@
             - deps_ok | bool
             - (sync_mode | bool) or (not tgt_jt_exists | bool)
 
+        # Record missing creds in report (even if we created/updated or create-only skipped update)
+        - name: Record missing creds (hybrid mode)
+          ansible.builtin.set_fact:
+            jt_missing_creds: "{{ jt_missing_creds + [ {'name': jt_name, 'missing_creds': missing_creds} ] }}"
+          when:
+            - deps_ok | bool
+            - (missing_creds | length) > 0
+
         # ---- Survey copy ----
-        # We pull the survey spec from the SOURCE template id, and apply it to the TARGET JT.
         - name: Get SOURCE survey spec for this JT
           awx.awx.controller_api:
             host: "{{ controller_host | default(omit) }}"
@@ -423,7 +433,7 @@
           when:
             - deps_ok | bool
             - src_survey.json is defined
-            - (src_survey.json.name is defined)  # basic sanity check the endpoint returned a survey spec object
+            - src_survey.json.name is defined
             - (sync_mode | bool) or (not tgt_jt_exists | bool)
           register: survey_apply
 
@@ -432,9 +442,9 @@
             jt_surveys_applied: "{{ jt_surveys_applied + [ jt_name ] }}"
           when:
             - deps_ok | bool
-            - (sync_mode | bool) or (not tgt_jt_exists | bool)
             - src_survey.json is defined
             - src_survey.json.name is defined
+            - (sync_mode | bool) or (not tgt_jt_exists | bool)
 
       loop: "{{ source_job_templates }}"
       loop_control:
@@ -459,6 +469,13 @@
     - name: Summary - Skipped templates (missing deps)
       ansible.builtin.debug:
         msg:
-          - "Skipped {{ jt_skipped | length }} Job Templates due to missing dependencies."
+          - "Skipped {{ jt_skipped | length }} Job Templates due to missing hard dependencies (inventory/EE)."
           - "Skipped detail: {{ jt_skipped }}"
       when: (jt_skipped | length) > 0
+
+    - name: Summary - Missing credentials (hybrid report)
+      ansible.builtin.debug:
+        msg:
+          - "Templates with missing credentials in target org: {{ jt_missing_creds | length }}"
+          - "Missing creds detail: {{ jt_missing_creds }}"
+      when: (jt_missing_creds | length) > 0
