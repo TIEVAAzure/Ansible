@@ -1,0 +1,464 @@
+---
+# AWX – Copy Job Templates + Surveys Between Orgs (Phase 1)
+#
+# Includes:
+#  1) Ensure TARGET org exists
+#  2) Ensure shared Project exists in TARGET org (duplicate per org, same repo/branch)
+#  3) Ensure Localhost inventory + localhost host exists in TARGET org
+#  4) Copy Job Templates from SOURCE org to TARGET org
+#     - Skips templates that reference missing deps (creds/inventory/EE)
+#  5) Copy Job Template Surveys (survey_spec)
+#
+# Key behaviour:
+#  - No duplication: keyed by JT name + org.
+#  - sync_mode=true (default): destination JTs + surveys are UPDATED to match source (overwrites dest edits)
+#  - sync_mode=false: CREATE-ONLY (does not modify existing JTs/surveys)
+#
+# Notes:
+#  - GitHub repo is public (scm_credential omitted).
+#  - Credentials are NOT copied (templates referencing missing creds are skipped if enabled).
+
+- name: "AWX: Phase 1 copy (Org + Project + Localhost + Job Templates + Surveys)"
+  hosts: localhost
+  gather_facts: false
+
+  collections:
+    - awx.awx
+
+  vars:
+    # ===== Orgs =====
+    source_org_name: "ORG-SOURCE"
+    target_org_name: "ORG-TARGET"
+
+    # ===== Shared Project (per-org duplicate) =====
+    shared_project_name: "TIEVAAzure/Ansible"
+    shared_project_scm_url: "https://github.com/TIEVAAzure/Ansible"
+    shared_project_scm_branch: "main"
+
+    # Repo is public for now - leave blank
+    shared_project_scm_credential_name: ""
+
+    # ===== Localhost inventory =====
+    localhost_inventory_name: "Localhost"
+    localhost_host_name: "localhost"
+    localhost_host_vars:
+      ansible_connection: "local"
+      ansible_python_interpreter: "/usr/bin/python3"
+
+    # ===== Copy behaviour =====
+    # sync_mode=true:
+    #   - Updates existing JTs/surveys in target to match source.
+    # sync_mode=false:
+    #   - Create-only (won't touch existing JTs/surveys).
+    sync_mode: true
+
+    # If true, skip templates when dependencies are missing (creds/inv/EE)
+    # If false, fail fast on first missing dependency.
+    skip_templates_missing_deps: true
+
+    page_size: 200
+
+    # ===== Controller connection =====
+    controller_host: "{{ lookup('env', 'CONTROLLER_HOST') | default(omit, true) }}"
+    controller_username: "{{ lookup('env', 'CONTROLLER_USERNAME') | default(omit, true) }}"
+    controller_password: "{{ lookup('env', 'CONTROLLER_PASSWORD') | default(omit, true) }}"
+    controller_oauthtoken: "{{ lookup('env', 'CONTROLLER_OAUTH_TOKEN') | default(omit, true) }}"
+    controller_validate_certs: false
+
+  tasks:
+    # -------------------------------------------------------------------------
+    # Step 1: Ensure TARGET org exists
+    # -------------------------------------------------------------------------
+    - name: Ensure TARGET org exists
+      awx.awx.organization:
+        name: "{{ target_org_name }}"
+        state: present
+        controller_host: "{{ controller_host | default(omit) }}"
+        controller_username: "{{ controller_username | default(omit) }}"
+        controller_password: "{{ controller_password | default(omit) }}"
+        controller_oauthtoken: "{{ controller_oauthtoken | default(omit) }}"
+        validate_certs: "{{ controller_validate_certs }}"
+
+    # Resolve SOURCE org ID (for API filtering)
+    - name: Lookup SOURCE org by name
+      awx.awx.controller_api:
+        host: "{{ controller_host | default(omit) }}"
+        username: "{{ controller_username | default(omit) }}"
+        password: "{{ controller_password | default(omit) }}"
+        oauthtoken: "{{ controller_oauthtoken | default(omit) }}"
+        validate_certs: "{{ controller_validate_certs }}"
+        method: GET
+        endpoint: "organizations"
+        query_params:
+          name: "{{ source_org_name }}"
+      register: source_org_lookup
+
+    - name: Fail if SOURCE org not found
+      ansible.builtin.fail:
+        msg: "SOURCE org '{{ source_org_name }}' not found in AWX."
+      when: (source_org_lookup.json.count | default(0)) | int == 0
+
+    - name: Set SOURCE org ID
+      ansible.builtin.set_fact:
+        source_org_id: "{{ source_org_lookup.json.results[0].id }}"
+
+    # -------------------------------------------------------------------------
+    # Step 2: Ensure shared Project exists in TARGET org
+    # -------------------------------------------------------------------------
+    - name: Ensure shared Project exists in TARGET org
+      awx.awx.project:
+        name: "{{ shared_project_name }}"
+        organization: "{{ target_org_name }}"
+        state: present
+        scm_type: git
+        scm_url: "{{ shared_project_scm_url }}"
+        scm_branch: "{{ shared_project_scm_branch }}"
+        scm_clean: true
+        scm_delete_on_update: true
+        scm_update_on_launch: true
+        scm_credential: >-
+          {{
+            (shared_project_scm_credential_name | length) > 0
+            | ternary(shared_project_scm_credential_name, omit)
+          }}
+        controller_host: "{{ controller_host | default(omit) }}"
+        controller_username: "{{ controller_username | default(omit) }}"
+        controller_password: "{{ controller_password | default(omit) }}"
+        controller_oauthtoken: "{{ controller_oauthtoken | default(omit) }}"
+        validate_certs: "{{ controller_validate_certs }}"
+
+    - name: Trigger project update (optional sanity check)
+      awx.awx.project_update:
+        project: "{{ shared_project_name }}"
+        organization: "{{ target_org_name }}"
+        wait: true
+        timeout: 600
+        controller_host: "{{ controller_host | default(omit) }}"
+        controller_username: "{{ controller_username | default(omit) }}"
+        controller_password: "{{ controller_password | default(omit) }}"
+        controller_oauthtoken: "{{ controller_oauthtoken | default(omit) }}"
+        validate_certs: "{{ controller_validate_certs }}"
+      when: not ansible_check_mode
+
+    # -------------------------------------------------------------------------
+    # Step 3: Ensure Localhost inventory + host exists in TARGET org
+    # -------------------------------------------------------------------------
+    - name: Ensure Localhost inventory exists in TARGET org
+      awx.awx.inventory:
+        name: "{{ localhost_inventory_name }}"
+        organization: "{{ target_org_name }}"
+        state: present
+        controller_host: "{{ controller_host | default(omit) }}"
+        controller_username: "{{ controller_username | default(omit) }}"
+        controller_password: "{{ controller_password | default(omit) }}"
+        controller_oauthtoken: "{{ controller_oauthtoken | default(omit) }}"
+        validate_certs: "{{ controller_validate_certs }}"
+
+    - name: Ensure localhost host exists in Localhost inventory
+      awx.awx.host:
+        name: "{{ localhost_host_name }}"
+        inventory: "{{ localhost_inventory_name }}"
+        state: present
+        variables: "{{ localhost_host_vars | to_nice_yaml }}"
+        controller_host: "{{ controller_host | default(omit) }}"
+        controller_username: "{{ controller_username | default(omit) }}"
+        controller_password: "{{ controller_password | default(omit) }}"
+        controller_oauthtoken: "{{ controller_oauthtoken | default(omit) }}"
+        validate_certs: "{{ controller_validate_certs }}"
+
+    # -------------------------------------------------------------------------
+    # Pre-flight: Build lookup lists in TARGET org (inventories, creds, EEs)
+    # -------------------------------------------------------------------------
+    - name: Get TARGET inventories (first page)
+      awx.awx.controller_api:
+        host: "{{ controller_host | default(omit) }}"
+        username: "{{ controller_username | default(omit) }}"
+        password: "{{ controller_password | default(omit) }}"
+        oauthtoken: "{{ controller_oauthtoken | default(omit) }}"
+        validate_certs: "{{ controller_validate_certs }}"
+        method: GET
+        endpoint: "inventories"
+        query_params:
+          organization: "{{ target_org_name }}"
+          page_size: "{{ page_size }}"
+          page: 1
+      register: tgt_inventories_page1
+
+    - name: Get TARGET credentials (first page)
+      awx.awx.controller_api:
+        host: "{{ controller_host | default(omit) }}"
+        username: "{{ controller_username | default(omit) }}"
+        password: "{{ controller_password | default(omit) }}"
+        oauthtoken: "{{ controller_oauthtoken | default(omit) }}"
+        validate_certs: "{{ controller_validate_certs }}"
+        method: GET
+        endpoint: "credentials"
+        query_params:
+          organization: "{{ target_org_name }}"
+          page_size: "{{ page_size }}"
+          page: 1
+      register: tgt_creds_page1
+
+    - name: Get TARGET execution environments (first page)
+      awx.awx.controller_api:
+        host: "{{ controller_host | default(omit) }}"
+        username: "{{ controller_username | default(omit) }}"
+        password: "{{ controller_password | default(omit) }}"
+        oauthtoken: "{{ controller_oauthtoken | default(omit) }}"
+        validate_certs: "{{ controller_validate_certs }}"
+        method: GET
+        endpoint: "execution_environments"
+        query_params:
+          page_size: "{{ page_size }}"
+          page: 1
+      register: tgt_ees_page1
+
+    - name: Build TARGET lookup name lists
+      ansible.builtin.set_fact:
+        tgt_inventory_names: "{{ (tgt_inventories_page1.json.results | default([])) | map(attribute='name') | list }}"
+        tgt_credential_names: "{{ (tgt_creds_page1.json.results | default([])) | map(attribute='name') | list }}"
+        tgt_ee_names: "{{ (tgt_ees_page1.json.results | default([])) | map(attribute='name') | list }}"
+
+    # -------------------------------------------------------------------------
+    # Step 4: Pull Job Templates from SOURCE org
+    # -------------------------------------------------------------------------
+    - name: Get Job Templates (page 1) from SOURCE org
+      awx.awx.controller_api:
+        host: "{{ controller_host | default(omit) }}"
+        username: "{{ controller_username | default(omit) }}"
+        password: "{{ controller_password | default(omit) }}"
+        oauthtoken: "{{ controller_oauthtoken | default(omit) }}"
+        validate_certs: "{{ controller_validate_certs }}"
+        method: GET
+        endpoint: "job_templates"
+        query_params:
+          organization: "{{ source_org_id }}"
+          page_size: "{{ page_size }}"
+          page: 1
+      register: jt_page_1
+
+    - name: Calculate total JT pages
+      ansible.builtin.set_fact:
+        jt_total_pages: "{{ ((jt_page_1.json.count | int) + (page_size | int) - 1) // (page_size | int) }}"
+        jt_pages: "{{ range(1, ((((jt_page_1.json.count | int) + (page_size | int) - 1) // (page_size | int)) + 1)) | list }}"
+
+    - name: Fetch remaining JT pages (if any)
+      awx.awx.controller_api:
+        host: "{{ controller_host | default(omit) }}"
+        username: "{{ controller_username | default(omit) }}"
+        password: "{{ controller_password | default(omit) }}"
+        oauthtoken: "{{ controller_oauthtoken | default(omit) }}"
+        validate_certs: "{{ controller_validate_certs }}"
+        method: GET
+        endpoint: "job_templates"
+        query_params:
+          organization: "{{ source_org_id }}"
+          page_size: "{{ page_size }}"
+          page: "{{ item }}"
+      loop: "{{ jt_pages }}"
+      when: item != 1
+      register: jt_other_pages
+
+    - name: Combine Job Templates into one list
+      ansible.builtin.set_fact:
+        source_job_templates: >-
+          {{
+            (jt_page_1.json.results | default([]))
+            +
+            (
+              jt_other_pages.results
+              | default([])
+              | map(attribute='json.results')
+              | list
+              | flatten
+            )
+          }}
+
+    - name: Initialise copy report
+      ansible.builtin.set_fact:
+        jt_copied: []
+        jt_skipped: []
+        jt_surveys_applied: []
+
+    # -------------------------------------------------------------------------
+    # Copy JT + Survey (per template)
+    # -------------------------------------------------------------------------
+    - name: Copy Job Templates (and Surveys) into TARGET org
+      vars:
+        jt_name: "{{ item.name }}"
+        src_inventory_name: "{{ item.summary_fields.inventory.name | default('') }}"
+        src_ee_name: "{{ item.summary_fields.execution_environment.name | default('') }}"
+        src_cred_names: "{{ (item.summary_fields.credentials | default([])) | map(attribute='name') | list }}"
+
+        inv_ok: "{{ (src_inventory_name | length == 0) or (src_inventory_name in tgt_inventory_names) }}"
+        creds_ok: "{{ (src_cred_names | length == 0) or ((src_cred_names | difference(tgt_credential_names)) | length == 0) }}"
+        ee_ok: "{{ (src_ee_name | length == 0) or (src_ee_name in tgt_ee_names) }}"
+        deps_ok: "{{ inv_ok and creds_ok and ee_ok }}"
+
+        missing_creds: "{{ src_cred_names | difference(tgt_credential_names) }}"
+        skip_reason: >-
+          {{
+            (not inv_ok) | ternary('Missing inventory in target: ' ~ src_inventory_name, '')
+            ~ ((not inv_ok and not creds_ok) | ternary(' | ', ''))
+            ~ (not creds_ok) | ternary('Missing credential(s) in target: ' ~ (missing_creds | join(', ')), '')
+            ~ (((not inv_ok or not creds_ok) and not ee_ok) | ternary(' | ', ''))
+            ~ (not ee_ok) | ternary('Missing EE in target: ' ~ src_ee_name, '')
+          }}
+
+      block:
+        - name: Fail fast if deps missing and skipping disabled
+          ansible.builtin.fail:
+            msg: "Cannot copy JT '{{ jt_name }}': {{ skip_reason }}"
+          when:
+            - (deps_ok | bool) == false
+            - (skip_templates_missing_deps | bool) == false
+
+        - name: Skip JT (record) if deps missing
+          ansible.builtin.set_fact:
+            jt_skipped: "{{ jt_skipped + [ {'name': jt_name, 'reason': skip_reason } ] }}"
+          when:
+            - (deps_ok | bool) == false
+            - (skip_templates_missing_deps | bool) == true
+
+        # Create/Update template in target, unless create-only mode and it already exists.
+        - name: Check if JT exists in TARGET org
+          awx.awx.controller_api:
+            host: "{{ controller_host | default(omit) }}"
+            username: "{{ controller_username | default(omit) }}"
+            password: "{{ controller_password | default(omit) }}"
+            oauthtoken: "{{ controller_oauthtoken | default(omit) }}"
+            validate_certs: "{{ controller_validate_certs }}"
+            method: GET
+            endpoint: "job_templates"
+            query_params:
+              name: "{{ jt_name }}"
+              organization: "{{ target_org_name }}"
+          register: tgt_jt_lookup
+          when: deps_ok | bool
+
+        - name: Set JT exists flag
+          ansible.builtin.set_fact:
+            tgt_jt_exists: "{{ (tgt_jt_lookup.json.count | default(0) | int) > 0 }}"
+            tgt_jt_id: "{{ (tgt_jt_lookup.json.results[0].id | default('')) }}"
+          when: deps_ok | bool
+
+        - name: Create/Update JT in TARGET org (sync mode OR not existing)
+          awx.awx.job_template:
+            name: "{{ jt_name }}"
+            organization: "{{ target_org_name }}"
+            state: present
+
+            # Force your shared project for standardisation
+            project: "{{ shared_project_name }}"
+
+            inventory: "{{ (src_inventory_name | length > 0) | ternary(src_inventory_name, omit) }}"
+            execution_environment: "{{ (src_ee_name | length > 0) | ternary(src_ee_name, omit) }}"
+            credentials: "{{ (src_cred_names | length > 0) | ternary(src_cred_names, omit) }}"
+
+            playbook: "{{ item.playbook }}"
+            description: "{{ item.description | default('') }}"
+            job_type: "{{ item.job_type | default('run') }}"
+            verbosity: "{{ item.verbosity | default(0) }}"
+            fork_count: "{{ item.fork_count | default(0) }}"
+            timeout: "{{ item.timeout | default(0) }}"
+            become_enabled: "{{ item.become_enabled | default(false) }}"
+            allow_simultaneous: "{{ item.allow_simultaneous | default(false) }}"
+            extra_vars: "{{ item.extra_vars | default('') }}"
+
+            # Ask-on-launch flags (you said fine to keep)
+            ask_variables_on_launch: "{{ item.ask_variables_on_launch | default(false) }}"
+            ask_limit_on_launch: "{{ item.ask_limit_on_launch | default(false) }}"
+            ask_tags_on_launch: "{{ item.ask_tags_on_launch | default(false) }}"
+            ask_skip_tags_on_launch: "{{ item.ask_skip_tags_on_launch | default(false) }}"
+            ask_job_type_on_launch: "{{ item.ask_job_type_on_launch | default(false) }}"
+            ask_inventory_on_launch: "{{ item.ask_inventory_on_launch | default(false) }}"
+            ask_credential_on_launch: "{{ item.ask_credential_on_launch | default(false) }}"
+            ask_execution_environment_on_launch: "{{ item.ask_execution_environment_on_launch | default(false) }}"
+            ask_forks_on_launch: "{{ item.ask_forks_on_launch | default(false) }}"
+            ask_timeout_on_launch: "{{ item.ask_timeout_on_launch | default(false) }}"
+            ask_verbosity_on_launch: "{{ item.ask_verbosity_on_launch | default(false) }}"
+
+            controller_host: "{{ controller_host | default(omit) }}"
+            controller_username: "{{ controller_username | default(omit) }}"
+            controller_password: "{{ controller_password | default(omit) }}"
+            controller_oauthtoken: "{{ controller_oauthtoken | default(omit) }}"
+            validate_certs: "{{ controller_validate_certs }}"
+          when:
+            - deps_ok | bool
+            - (sync_mode | bool) or (not tgt_jt_exists | bool)
+          register: jt_apply
+
+        - name: Record JT copied/updated
+          ansible.builtin.set_fact:
+            jt_copied: "{{ jt_copied + [ jt_name ] }}"
+          when:
+            - deps_ok | bool
+            - (sync_mode | bool) or (not tgt_jt_exists | bool)
+
+        # ---- Survey copy ----
+        # We pull the survey spec from the SOURCE template id, and apply it to the TARGET JT.
+        - name: Get SOURCE survey spec for this JT
+          awx.awx.controller_api:
+            host: "{{ controller_host | default(omit) }}"
+            username: "{{ controller_username | default(omit) }}"
+            password: "{{ controller_password | default(omit) }}"
+            oauthtoken: "{{ controller_oauthtoken | default(omit) }}"
+            validate_certs: "{{ controller_validate_certs }}"
+            method: GET
+            endpoint: "job_templates/{{ item.id }}/survey_spec/"
+          register: src_survey
+          when: deps_ok | bool
+
+        - name: Apply survey to TARGET JT (sync mode OR JT newly created)
+          awx.awx.job_template_survey:
+            job_template: "{{ jt_name }}"
+            organization: "{{ target_org_name }}"
+            state: present
+            survey_spec: "{{ src_survey.json }}"
+            controller_host: "{{ controller_host | default(omit) }}"
+            controller_username: "{{ controller_username | default(omit) }}"
+            controller_password: "{{ controller_password | default(omit) }}"
+            controller_oauthtoken: "{{ controller_oauthtoken | default(omit) }}"
+            validate_certs: "{{ controller_validate_certs }}"
+          when:
+            - deps_ok | bool
+            - src_survey.json is defined
+            - (src_survey.json.name is defined)  # basic sanity check the endpoint returned a survey spec object
+            - (sync_mode | bool) or (not tgt_jt_exists | bool)
+          register: survey_apply
+
+        - name: Record survey applied
+          ansible.builtin.set_fact:
+            jt_surveys_applied: "{{ jt_surveys_applied + [ jt_name ] }}"
+          when:
+            - deps_ok | bool
+            - (sync_mode | bool) or (not tgt_jt_exists | bool)
+            - src_survey.json is defined
+            - src_survey.json.name is defined
+
+      loop: "{{ source_job_templates }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    # -------------------------------------------------------------------------
+    # Summary / reporting
+    # -------------------------------------------------------------------------
+    - name: Summary - Job Templates copied/updated
+      ansible.builtin.debug:
+        msg:
+          - "sync_mode={{ sync_mode }} (true=sync/update, false=create-only)"
+          - "Copied/Updated {{ jt_copied | length }} Job Templates into '{{ target_org_name }}'."
+          - "Templates: {{ jt_copied }}"
+
+    - name: Summary - Surveys applied
+      ansible.builtin.debug:
+        msg:
+          - "Applied surveys to {{ jt_surveys_applied | length }} Job Templates."
+          - "Survey templates: {{ jt_surveys_applied }}"
+
+    - name: Summary - Skipped templates (missing deps)
+      ansible.builtin.debug:
+        msg:
+          - "Skipped {{ jt_skipped | length }} Job Templates due to missing dependencies."
+          - "Skipped detail: {{ jt_skipped }}"
+      when: (jt_skipped | length) > 0
