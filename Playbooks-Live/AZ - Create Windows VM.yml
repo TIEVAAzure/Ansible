@@ -5,13 +5,13 @@
 # - Auth: azure.azcollection via AWX Azure credential (no Azure CLI required)
 #
 # Security note:
-#   Do not commit real passwords. Supply admin_password via AWX Survey (secret)
-#   or a credential, and consider using Key Vault in more mature setups.
+#   Supply admin_password via AWX Survey (secret) or a credential.
 
 - name: Create a Windows Server VM in existing RG
   hosts: localhost
   connection: local
   gather_facts: false
+
   collections:
     - azure.azcollection
 
@@ -19,39 +19,38 @@
     # Toggle to prevent secrets (like admin_password) from being printed in job output
     hide_secrets: "{{ hide_secrets | default(true) }}"
 
-    # Core settings (defaults - usually overridden by AWX survey)
+    # AWX survey variables (required unless stated otherwise)
     rg_name: ""
     location: ""
-
     vm_name: ""
 
     # NIC name derived from the VM name to keep things consistent
     nic_name: "nic-win-{{ vm_name }}"
 
     # Existing virtual network and subnet
-    vnet_name: ""      # existing VNet
-    subnet_name: ""            # existing subnet
+    vnet_name: ""
+    subnet_name: ""
 
     # Local admin account on the VM
     admin_username: ""
-    admin_password: ""   # override via AWX credential/survey
+    admin_password: ""
 
     # VM sizing and image
     vm_size: ""
-    sku: ""
+    sku: ""                  # e.g. 2022-Datacenter, 2019-Datacenter etc.
 
-    disk_size_gb: ""
-    managed_disk_type: ""
+    disk_size_gb: ""         # numeric string is fine for survey, module expects int-ish
+    managed_disk_type: ""    # e.g. Premium_LRS, StandardSSD_LRS
 
-    # Behaviour toggles
-    vm_state: present                        # keep as "present" in this play
+    # Behaviour toggles (keep create-only)
+    vm_state: present
 
-    enable_accelerated_networking: false     # true / false
+    enable_accelerated_networking: false
 
-    public_ip_mode: "none"                   # "none" or "new"
-    nsg_mode: "none"                         # "none" or "basic"
+    public_ip_mode: "none"   # "none" or "new"
+    nsg_mode: "none"         # "none" or "basic"
 
-    # Shared defaults with delete playbook (used when state=absent there)
+    # Included for consistency with delete playbooks (not used when state=present)
     delete_os_disk_with_vm: true
     delete_nic_with_vm: true
 
@@ -60,20 +59,26 @@
     - name: Guard | Validate required inputs and safe choices
       ansible.builtin.assert:
         that:
-          - rg_name is defined and (rg_name | string | length) > 2
-          - location is defined and (location | string | length) > 2
-          - vm_name is defined and (vm_name | string | length) > 1
-          - vnet_name is defined and (vnet_name | string | length) > 1
-          - subnet_name is defined and (subnet_name | string | length) > 1
-          - vm_state | lower == "present"
-          - public_ip_mode | lower in ["none", "new"]
-          - nsg_mode | lower in ["none", "basic"]
-          - admin_username is defined and (admin_username | string | length) > 1
-          - admin_password is defined and (admin_password | string | length) >= 10
+          - rg_name | trim | length > 2
+          - location | trim | length > 2
+          - vm_name | trim | length > 1
+          - vnet_name | trim | length > 1
+          - subnet_name | trim | length > 1
+
+          - admin_username | trim | length > 1
+          - admin_password | string | length >= 10
+
+          - vm_size | trim | length > 2
+          - sku | trim | length > 2
+          - disk_size_gb | string | trim | length > 0
+          - managed_disk_type | trim | length > 2
+
+          - (vm_state | lower) == "present"
+          - (public_ip_mode | lower) in ["none", "new"]
+          - (nsg_mode | lower) in ["none", "basic"]
         fail_msg: >
-          Missing required variables or invalid options. In AWX, provide values via Survey and store admin_password as a secret.
-
-
+          Missing required inputs or invalid options.
+          Ensure required values are provided via the AWX Survey and store admin_password as a secret.
 
     - name: Check if VM already exists
       azure.azcollection.azure_rm_virtualmachine_info:
@@ -85,13 +90,13 @@
     - name: Fail when VM already exists (create-only behaviour)
       ansible.builtin.fail:
         msg: "VM {{ vm_name }} already exists in {{ rg_name }}. Aborting to avoid accidental update."
-      when: (vm_info.vms | default([])) | length > 0
+      when: >
+        (vm_info.vms | default(vm_info.virtual_machines | default([]))) | length > 0
 
     # -----------------------------
     # Optional network extras
     # -----------------------------
 
-    # Optional network extras
     - name: Create public IP for VM (optional)
       azure.azcollection.azure_rm_publicipaddress:
         resource_group: "{{ rg_name }}"
@@ -99,7 +104,7 @@
         allocation_method: Static
         sku: Standard
         state: present
-      when: public_ip_mode == "new" and vm_state == "present"
+      when: (public_ip_mode | lower) == "new"
 
     - name: Ensure NSG exists (empty by default)
       azure.azcollection.azure_rm_securitygroup:
@@ -107,7 +112,7 @@
         name: "{{ vm_name }}-nsg"
         location: "{{ location }}"
         state: present
-      when: nsg_mode == "basic" and vm_state == "present"
+      when: (nsg_mode | lower) == "basic"
 
     # NIC with no NSG and no PIP
     - name: Ensure NIC without NSG or PIP exists
@@ -120,7 +125,9 @@
         ip_configurations:
           - name: ipconfig1
         state: present
-      when: vm_state == "present" and public_ip_mode == "none" and nsg_mode == "none"
+      when:
+        - (public_ip_mode | lower) == "none"
+        - (nsg_mode | lower) == "none"
 
     # NIC with PIP only
     - name: Ensure NIC with PIP only exists
@@ -134,7 +141,9 @@
           - name: ipconfig1
             public_ip_address_name: "{{ vm_name }}-pip"
         state: present
-      when: vm_state == "present" and public_ip_mode == "new" and nsg_mode == "none"
+      when:
+        - (public_ip_mode | lower) == "new"
+        - (nsg_mode | lower) == "none"
 
     # NIC with NSG only
     - name: Ensure NIC with NSG only exists
@@ -148,7 +157,9 @@
         ip_configurations:
           - name: ipconfig1
         state: present
-      when: vm_state == "present" and public_ip_mode == "none" and nsg_mode == "basic"
+      when:
+        - (public_ip_mode | lower) == "none"
+        - (nsg_mode | lower) == "basic"
 
     # NIC with NSG and PIP
     - name: Ensure NIC with NSG and PIP exists
@@ -163,7 +174,9 @@
           - name: ipconfig1
             public_ip_address_name: "{{ vm_name }}-pip"
         state: present
-      when: vm_state == "present" and public_ip_mode == "new" and nsg_mode == "basic"
+      when:
+        - (public_ip_mode | lower) == "new"
+        - (nsg_mode | lower) == "basic"
 
     # -----------------------------
     # VM creation
@@ -191,4 +204,4 @@
           sku: "{{ sku }}"
           version: latest
 
-        state: "{{ vm_state }}"
+        state: present

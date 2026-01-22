@@ -12,18 +12,19 @@
     - azure.azcollection
 
   vars:
-    # AWX survey variables (example)
-    rg_name: "{{ rg_name | default('rg-mg-demo-uksouth-001') }}"
-    location: "{{ location | default('uksouth') }}"
+    # AWX survey variables
+    rg_name: ""
+    location: ""
 
   tasks:
     - name: Guard | Validate required inputs
       ansible.builtin.assert:
         that:
-          - rg_name is defined and (rg_name | string | length) > 2
-          - location is defined and (location | string | length) > 2
+          - rg_name | trim | length > 2
+          - location | trim | length > 2
         fail_msg: >
-          Missing rg_name or location. In AWX, set these via the Survey (or defaults).
+          Missing required inputs.
+          Ensure rg_name and location are provided via the AWX Survey before running this job.
 
     - name: Ensure resource group exists
       azure_rm_resourcegroup:

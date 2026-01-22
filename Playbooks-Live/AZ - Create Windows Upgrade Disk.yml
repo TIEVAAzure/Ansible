@@ -22,6 +22,9 @@
 # Notes
 #   - We isolate Azure CLI state in a job-local folder to avoid profile errors
 #     inside containers.
+#   - This playbook is idempotent:
+#       * If the upgrade disk already exists, disk creation is skipped.
+#       * Disk attachment is always ensured.
 # ============================================================================
 
 - name: Create and attach Windows Server upgrade media disk (zone-aware, path-validated, using az CLI)
@@ -47,10 +50,11 @@
     #   server2016Upgrade, server2019Upgrade, server2022Upgrade, server2025Upgrade
     upgrade_sku: ""
 
-    # Disk name for the upgrade media
+    # Disk name for the upgrade media (derived from VM name)
     upgrade_disk_name: "ws-upgrade-{{ vm_name }}"
 
-    # Managed disk SKU for the upgrade disk
+    # Managed disk SKU for the upgrade disk (required)
+    # Examples: Standard_LRS, Premium_LRS, StandardSSD_LRS, UltraSSD_LRS (if supported)
     upgrade_disk_sku: ""
 
     # Store AZ CLI state in an isolated location (important for AWX containers)
@@ -79,12 +83,13 @@
     - name: Guard | Validate required inputs
       ansible.builtin.assert:
         that:
-          - rg_name | trim | length > 0
-          - vm_name | trim | length > 0
+          - rg_name | trim | length > 2
+          - vm_name | trim | length > 1
           - source_os in valid_upgrade_paths
-          - upgrade_sku | trim | length > 0
+          - upgrade_sku | trim | length > 2
+          - upgrade_disk_sku | trim | length > 2
         fail_msg: >
-          Missing/invalid inputs. Ensure rg_name, vm_name, source_os and upgrade_sku are set.
+          Missing/invalid inputs. Ensure rg_name, vm_name, source_os, upgrade_sku and upgrade_disk_sku are set.
           source_os must be one of: {{ valid_upgrade_paths.keys() | list | join(', ') }}
 
     # ------------------------------------------------------------------------
@@ -191,11 +196,26 @@
           VM '{{ vm_name }}' is in '{{ vm_location }}', zone: {{ vm_zone | default('None (no-zone VM)') }}.
 
     # ------------------------------------------------------------------------
-    # Step 4 | Create upgrade media disk with Azure CLI (zone-aware)
+    # Step 4 | Create upgrade media disk (idempotent: skip if disk exists)
     # ------------------------------------------------------------------------
+    - name: Check if upgrade disk already exists
+      azure.azcollection.azure_rm_manageddisk_info:
+        resource_group: "{{ rg_name }}"
+        name: "{{ upgrade_disk_name }}"
+      register: disk_info
+      failed_when: false
+
+    - name: Show disk exists status
+      ansible.builtin.debug:
+        msg: >
+          Upgrade disk '{{ upgrade_disk_name }}' exists: {{
+            ((disk_info.disks | default([])) | length > 0) | ternary('yes', 'no')
+          }}
+
     - name: Build zone argument list for az disk create
       ansible.builtin.set_fact:
         zone_args: "{{ ['--zone', vm_zone] if (vm_zone is not none and (vm_zone | string | length) > 0) else [] }}"
+      when: (disk_info.disks | default([])) | length == 0
 
     - name: Build argv for az disk create
       ansible.builtin.set_fact:
@@ -211,10 +231,12 @@
                'MicrosoftWindowsServer:WindowsServerUpgrade:' ~ upgrade_sku ~ ':latest',
                '-o', 'json']
           }}
+      when: (disk_info.disks | default([])) | length == 0
 
     - name: Show az disk create argv
       ansible.builtin.debug:
         var: az_disk_create_argv
+      when: (disk_info.disks | default([])) | length == 0
 
     - name: Create Windows Server upgrade media disk via az CLI
       ansible.builtin.command:
@@ -222,11 +244,13 @@
       environment:
         AZURE_CONFIG_DIR: "{{ az_cli_config_dir }}"
       register: create_disk_cmd
-      changed_when: "'Succeeded' in (create_disk_cmd.stdout | default(''))"
+      changed_when: true
+      when: (disk_info.disks | default([])) | length == 0
 
     - name: Show disk creation output
       ansible.builtin.debug:
         var: create_disk_cmd.stdout
+      when: (disk_info.disks | default([])) | length == 0
 
     # ------------------------------------------------------------------------
     # Step 5 | Attach disk to VM on next free LUN

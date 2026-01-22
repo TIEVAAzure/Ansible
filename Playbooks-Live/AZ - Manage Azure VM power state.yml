@@ -13,9 +13,9 @@
     - azure.azcollection
 
   # In AWX you'll normally override these via a Survey:
-  # - rg_name      -> text field
-  # - vm_action    -> choice (start|stop|restart)
-  # - azure_vm_names -> multi-line text (one VM name per line)
+  # - rg_name         -> text field
+  # - vm_action       -> choice (start|stop|restart)
+  # - azure_vm_names  -> multi-line text (one VM name per line)
   vars:
     rg_name: ""
     vm_action: ""
@@ -23,27 +23,29 @@
 
   tasks:
     - name: Build VM list from newline-separated survey input
-      set_fact:
+      ansible.builtin.set_fact:
         vm_list: >-
-          {{ azure_vm_names.splitlines()
+          {{ (azure_vm_names | default('')).splitlines()
              | map('trim')
              | reject('equalto', '')
              | list }}
 
-
     - name: Guard | Validate action and VM list
       ansible.builtin.assert:
         that:
-          - rg_name is defined and (rg_name | string | length) > 2
-          - vm_action is defined and (vm_action | lower) in ["start", "stop", "deallocate", "stopped", "restart", "reboot"]
+          - rg_name | trim | length > 2
+          - vm_action | trim | length > 0
+          - (vm_action | lower) in ["start", "stop", "deallocate", "stopped", "restart", "reboot"]
           - vm_list | length > 0
         fail_msg: >
+          Missing required inputs or invalid action.
           Provide rg_name, a valid vm_action, and at least one VM name (one per line).
+
     - name: Show selected VMs and action
-      debug:
+      ansible.builtin.debug:
         msg:
           - "Resource group: {{ rg_name }}"
-          - "Action: {{ vm_action }}"
+          - "Action: {{ vm_action | lower }}"
           - "VMs: {{ vm_list | join(', ') }}"
 
     - name: START VMs
@@ -53,7 +55,7 @@
         state: present
         started: true
       loop: "{{ vm_list }}"
-      when: vm_action | lower == 'start'
+      when: (vm_action | lower) == "start"
 
     - name: STOP (deallocate) VMs
       azure.azcollection.azure_rm_virtualmachine:
@@ -63,7 +65,7 @@
         started: false          # power off
         allocated: false        # deallocate so you stop paying compute
       loop: "{{ vm_list }}"
-      when: vm_action | lower in ['stop', 'deallocate', 'stopped']
+      when: (vm_action | lower) in ["stop", "deallocate", "stopped"]
 
     - name: RESTART VMs
       azure.azcollection.azure_rm_virtualmachine:
@@ -72,4 +74,4 @@
         state: present
         restarted: true
       loop: "{{ vm_list }}"
-      when: vm_action | lower in ['restart', 'reboot']
+      when: (vm_action | lower) in ["restart", "reboot"]
