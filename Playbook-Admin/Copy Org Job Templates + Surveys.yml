@@ -49,6 +49,15 @@
     # ---------------------------------------------------------------------
     # Guards
     # ---------------------------------------------------------------------
+    - name: Show installed collections in EE
+      ansible.builtin.command: ansible-galaxy collection list
+      register: galaxy_list
+      changed_when: false
+
+    - name: Print collections list
+      ansible.builtin.debug:
+        var: galaxy_list.stdout_lines
+        
     - name: Guard - controller vars present
       ansible.builtin.assert:
         that:
