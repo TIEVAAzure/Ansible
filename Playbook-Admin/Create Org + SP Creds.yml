@@ -1,30 +1,39 @@
 ---
-# AWX – Org Bootstrap (Phase 0)
+# AWX – Org Bootstrap (Org + Project + Localhost + Optional Azure SP Credential)
 #
-# Creates:
+# Creates/ensures:
 #  - Organization
-#  - Shared Project (public repo)
-#  - Localhost inventory + localhost host
-#  - Optional: standard credentials (ONLY if values provided)
+#  - Shared Project (per-org duplicate) pointing to the shared repo/branch
+#  - Localhost inventory + localhost host (ansible_connection=local)
+#  - OPTIONAL: Azure Resource Manager credential named "Azure-SP-Prod"
 #
-# Why optional creds:
-#  - Many credential types require mandatory fields.
-#  - This playbook won’t create broken creds; it will skip & report missing inputs.
+# Controller auth:
+#  - Supports BOTH env var styles:
+#      CONTROLLER_HOST / CONTROLLER_OAUTH_TOKEN  (new)
+#      TOWER_HOST      / TOWER_OAUTH_TOKEN       (legacy)
+#
+# Recommended: set env vars on the Job Template (Environment Variables, JSON object):
+#  {
+#    "TOWER_HOST": "https://tievaawx01.uksouth.cloudapp.azure.com",
+#    "TOWER_OAUTH_TOKEN": "xxx",
+#    "TOWER_VERIFY_SSL": "false"
+#  }
 
-- name: "AWX: Org Bootstrap (Org + Project + Localhost + Optional Creds)"
+- name: "AWX: Org Bootstrap (Org + Project + Localhost + Optional Azure SP)"
   hosts: localhost
   gather_facts: false
+
   collections:
     - awx.awx
 
   vars:
-    # ===== Target Org =====
-    target_org_name: "ORG-TARGET"
-
-    # ===== Shared Project =====
+    # ===== Shared Project (per-org duplicate) =====
     shared_project_name: "TIEVAAzure/Ansible"
     shared_project_scm_url: "https://github.com/TIEVAAzure/Ansible"
     shared_project_scm_branch: "main"
+
+    # Repo is public for now - leave blank
+    shared_project_scm_credential_name: ""
 
     # ===== Localhost inventory =====
     localhost_inventory_name: "Localhost"
@@ -33,55 +42,89 @@
       ansible_connection: "local"
       ansible_python_interpreter: "/usr/bin/python3"
 
-    # ===== Credential Baseline =====
-    # These are "optional create" — if required fields are blank, we skip and report.
-    #
-    # NOTE: Keep names consistent across orgs to make the copy playbook “just work”.
-    #
-    # Azure Resource Manager (Service Principal)
-    azure_arm_cred_name: "Azure-SP-Deployment"
-    azure_subscription_id: ""   # set via AWX Survey when ready
-    azure_tenant: ""            # set via AWX Survey when ready
-    azure_client_id: ""         # set via AWX Survey when ready
-    azure_client_secret: ""     # set via AWX Survey when ready (encrypted in AWX)
+    # ===== Optional Azure SP credential baseline =====
+    azure_arm_cred_name: "Azure-SP-Prod"
 
-    # Example Machine credential (optional)
-    machine_cred_name: "Local-Admin"
-    machine_username: ""        # optional
-    machine_password: ""        # optional
+    # Toggle (set via AWX Survey)
+    create_azure_sp: false
 
-    # ===== Controller connection =====
-    controller_host: "{{ lookup('env', 'CONTROLLER_HOST') | default(omit, true) }}"
-    controller_username: "{{ lookup('env', 'CONTROLLER_USERNAME') | default(omit, true) }}"
-    controller_password: "{{ lookup('env', 'CONTROLLER_PASSWORD') | default(omit, true) }}"
-    controller_oauthtoken: "{{ lookup('env', 'CONTROLLER_OAUTH_TOKEN') | default(omit, true) }}"
+    # Required only when create_azure_sp=true (set via AWX Survey)
+    azure_subscription_id: ""
+    azure_tenant: ""
+    azure_client_id: ""
+    azure_client_secret: ""
+
+    # ===== Controller connection (future-proof) =====
+    controller_host: >-
+      {{
+        lookup('env', 'CONTROLLER_HOST')
+        | default(lookup('env', 'TOWER_HOST'), true)
+        | default(omit, true)
+      }}
+
+    controller_username: >-
+      {{
+        lookup('env', 'CONTROLLER_USERNAME')
+        | default(lookup('env', 'TOWER_USERNAME'), true)
+        | default(omit, true)
+      }}
+
+    controller_password: >-
+      {{
+        lookup('env', 'CONTROLLER_PASSWORD')
+        | default(lookup('env', 'TOWER_PASSWORD'), true)
+        | default(omit, true)
+      }}
+
+    controller_oauthtoken: >-
+      {{
+        lookup('env', 'CONTROLLER_OAUTH_TOKEN')
+        | default(lookup('env', 'TOWER_OAUTH_TOKEN'), true)
+        | default(omit, true)
+      }}
+
     controller_validate_certs: false
 
   tasks:
+    # -------------------------------------------------------------------------
+    # Guard rails: prevent localhost fallback
+    # -------------------------------------------------------------------------
     - name: Guard - ensure controller connection is available
       ansible.builtin.assert:
         that:
-          - lookup('env', 'TOWER_HOST') or lookup('env', 'CONTROLLER_HOST')
-          - lookup('env', 'TOWER_OAUTH_TOKEN') or lookup('env', 'CONTROLLER_OAUTH_TOKEN')
+          - controller_host is defined
+          - controller_host | length > 0
+          - controller_oauthtoken is defined or (controller_username is defined and controller_password is defined)
         fail_msg: >
-          AWX controller connection details not found.
+          AWX controller connection not configured.
           Set TOWER_HOST/TOWER_OAUTH_TOKEN (preferred) or CONTROLLER_HOST/CONTROLLER_OAUTH_TOKEN
-          in the Job Template environment variables.
+          in the Job Template Environment Variables.
+
     # -------------------------------------------------------------------------
-    # Org
+    # Required input: target org name (expected via Survey)
+    # -------------------------------------------------------------------------
+    - name: Guard - ensure target_org_name provided
+      ansible.builtin.assert:
+        that:
+          - target_org_name is defined
+          - target_org_name | length > 0
+        fail_msg: "target_org_name is required (set via Survey)."
+
+    # -------------------------------------------------------------------------
+    # 1) Organization
     # -------------------------------------------------------------------------
     - name: Ensure target org exists
       awx.awx.organization:
         name: "{{ target_org_name }}"
         state: present
-        controller_host: "{{ controller_host | default(omit) }}"
+        controller_host: "{{ controller_host }}"
         controller_username: "{{ controller_username | default(omit) }}"
         controller_password: "{{ controller_password | default(omit) }}"
         controller_oauthtoken: "{{ controller_oauthtoken | default(omit) }}"
         validate_certs: "{{ controller_validate_certs }}"
 
     # -------------------------------------------------------------------------
-    # Project
+    # 2) Shared Project (per-org)
     # -------------------------------------------------------------------------
     - name: Ensure shared project exists in target org
       awx.awx.project:
@@ -94,21 +137,39 @@
         scm_clean: true
         scm_delete_on_update: true
         scm_update_on_launch: true
-        controller_host: "{{ controller_host | default(omit) }}"
+        scm_credential: >-
+          {{
+            (shared_project_scm_credential_name | length) > 0
+            | ternary(shared_project_scm_credential_name, omit)
+          }}
+        controller_host: "{{ controller_host }}"
         controller_username: "{{ controller_username | default(omit) }}"
         controller_password: "{{ controller_password | default(omit) }}"
         controller_oauthtoken: "{{ controller_oauthtoken | default(omit) }}"
         validate_certs: "{{ controller_validate_certs }}"
 
+    - name: Trigger project update (optional sanity check)
+      awx.awx.project_update:
+        project: "{{ shared_project_name }}"
+        organization: "{{ target_org_name }}"
+        wait: true
+        timeout: 600
+        controller_host: "{{ controller_host }}"
+        controller_username: "{{ controller_username | default(omit) }}"
+        controller_password: "{{ controller_password | default(omit) }}"
+        controller_oauthtoken: "{{ controller_oauthtoken | default(omit) }}"
+        validate_certs: "{{ controller_validate_certs }}"
+      when: not ansible_check_mode
+
     # -------------------------------------------------------------------------
-    # Localhost Inventory
+    # 3) Localhost inventory + host
     # -------------------------------------------------------------------------
     - name: Ensure Localhost inventory exists
       awx.awx.inventory:
         name: "{{ localhost_inventory_name }}"
         organization: "{{ target_org_name }}"
         state: present
-        controller_host: "{{ controller_host | default(omit) }}"
+        controller_host: "{{ controller_host }}"
         controller_username: "{{ controller_username | default(omit) }}"
         controller_password: "{{ controller_password | default(omit) }}"
         controller_oauthtoken: "{{ controller_oauthtoken | default(omit) }}"
@@ -120,32 +181,36 @@
         inventory: "{{ localhost_inventory_name }}"
         state: present
         variables: "{{ localhost_host_vars | to_nice_yaml }}"
-        controller_host: "{{ controller_host | default(omit) }}"
+        controller_host: "{{ controller_host }}"
         controller_username: "{{ controller_username | default(omit) }}"
         controller_password: "{{ controller_password | default(omit) }}"
         controller_oauthtoken: "{{ controller_oauthtoken | default(omit) }}"
         validate_certs: "{{ controller_validate_certs }}"
 
     # -------------------------------------------------------------------------
-    # Optional Credential Creation + Reporting
+    # 4) Optional Azure SP credential (Azure Resource Manager)
     # -------------------------------------------------------------------------
-    - name: Initialise bootstrap credential report
-      ansible.builtin.set_fact:
-        creds_created: []
-        creds_skipped: []
-
-    # --- Azure ARM SP Credential ---
-    - name: Decide if Azure ARM credential has required inputs
+    - name: Determine if Azure SP inputs are complete
       ansible.builtin.set_fact:
         azure_arm_ready: >-
           {{
-            (azure_subscription_id | length > 0)
+            (create_azure_sp | bool)
+            and (azure_subscription_id | length > 0)
             and (azure_tenant | length > 0)
             and (azure_client_id | length > 0)
             and (azure_client_secret | length > 0)
           }}
 
-    - name: Create Azure ARM credential (only when inputs supplied)
+    - name: Fail if create_azure_sp=true but required fields are missing
+      ansible.builtin.fail:
+        msg: >-
+          create_azure_sp=true but one or more required fields are missing:
+          azure_subscription_id, azure_tenant, azure_client_id, azure_client_secret
+      when:
+        - create_azure_sp | bool
+        - not azure_arm_ready | bool
+
+    - name: Create/Update Azure ARM credential (Azure-SP-Prod)
       awx.awx.credential:
         name: "{{ azure_arm_cred_name }}"
         organization: "{{ target_org_name }}"
@@ -156,53 +221,12 @@
           tenant: "{{ azure_tenant }}"
           client: "{{ azure_client_id }}"
           secret: "{{ azure_client_secret }}"
-        controller_host: "{{ controller_host | default(omit) }}"
+        controller_host: "{{ controller_host }}"
         controller_username: "{{ controller_username | default(omit) }}"
         controller_password: "{{ controller_password | default(omit) }}"
         controller_oauthtoken: "{{ controller_oauthtoken | default(omit) }}"
         validate_certs: "{{ controller_validate_certs }}"
       when: azure_arm_ready | bool
-
-    - name: Record Azure ARM credential created/skipped
-      ansible.builtin.set_fact:
-        creds_created: "{{ creds_created + [azure_arm_cred_name] }}"
-      when: azure_arm_ready | bool
-
-    - name: Record Azure ARM credential skipped (missing inputs)
-      ansible.builtin.set_fact:
-        creds_skipped: "{{ creds_skipped + [ {'name': azure_arm_cred_name, 'reason': 'Missing one or more required fields: subscription_id/tenant/client_id/client_secret'} ] }}"
-      when: not azure_arm_ready | bool
-
-    # --- Machine Credential (optional baseline example) ---
-    - name: Decide if Machine credential has inputs (username+password)
-      ansible.builtin.set_fact:
-        machine_ready: "{{ (machine_username | length > 0) and (machine_password | length > 0) }}"
-
-    - name: Create Machine credential (only when inputs supplied)
-      awx.awx.credential:
-        name: "{{ machine_cred_name }}"
-        organization: "{{ target_org_name }}"
-        credential_type: "Machine"
-        state: present
-        inputs:
-          username: "{{ machine_username }}"
-          password: "{{ machine_password }}"
-        controller_host: "{{ controller_host | default(omit) }}"
-        controller_username: "{{ controller_username | default(omit) }}"
-        controller_password: "{{ controller_password | default(omit) }}"
-        controller_oauthtoken: "{{ controller_oauthtoken | default(omit) }}"
-        validate_certs: "{{ controller_validate_certs }}"
-      when: machine_ready | bool
-
-    - name: Record Machine credential created/skipped
-      ansible.builtin.set_fact:
-        creds_created: "{{ creds_created + [machine_cred_name] }}"
-      when: machine_ready | bool
-
-    - name: Record Machine credential skipped (missing inputs)
-      ansible.builtin.set_fact:
-        creds_skipped: "{{ creds_skipped + [ {'name': machine_cred_name, 'reason': 'Username/password not provided'} ] }}"
-      when: not machine_ready | bool
 
     # -------------------------------------------------------------------------
     # Summary
@@ -211,5 +235,8 @@
       ansible.builtin.debug:
         msg:
           - "Org bootstrap completed for '{{ target_org_name }}'."
-          - "Credentials created: {{ creds_created }}"
-          - "Credentials skipped: {{ creds_skipped }}"
+          - "Project ensured: {{ shared_project_name }} ({{ shared_project_scm_branch }})"
+          - "Inventory ensured: {{ localhost_inventory_name }} (host: {{ localhost_host_name }})"
+          - "Azure SP requested: {{ create_azure_sp | bool }}"
+          - "Azure SP created/updated: {{ azure_arm_ready | bool }}"
+          - "Azure credential name: {{ azure_arm_cred_name }}"
