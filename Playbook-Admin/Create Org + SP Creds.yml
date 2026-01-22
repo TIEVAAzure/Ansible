@@ -34,7 +34,7 @@
     shared_project_scm_credential_name: ""
 
     # ===== Localhost inventory =====
-    localhost_inventory_name: "Localhost"
+    localhost_inventory_name: "{{ target_org_name }} - Localhost"
     localhost_host_name: "localhost"
     localhost_host_vars:
       ansible_connection: "local"
