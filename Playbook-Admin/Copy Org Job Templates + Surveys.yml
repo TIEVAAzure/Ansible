@@ -1,26 +1,11 @@
 ---
 # Playbook-Admin/Copy Templates + Surveys (Bootstrap Aware).yml
 #
-# Purpose:
-#   Copy selected Job Templates (including Surveys + ask_* flags) from a SOURCE org
-#   into a TARGET org, while being "bootstrap aware" (i.e. assumes the TARGET org
-#   already has a project + localhost inventory created by your bootstrap playbook).
-#
-# Key behaviour:
-#   - Selection via include/exclude wildcards (comma-separated)
-#   - Dry run mode prints what WOULD be copied and exits cleanly
-#   - Inventory mapping:
-#       * If allow_only_localhost_inventory_mapping=True, only templates whose inventory
-#         is "Localhost" will be copied, and they will map to target inventory name
-#         (defaults to target_org_name).
-#   - Credentials:
-#       * If create_templates_without_missing_creds=True, templates are created without
-#         attaching creds when they don’t exist in the target org (and we log them).
-#       * If False, templates missing creds will be skipped (and logged).
-#
-# Requirements (EE):
-#   - awx.awx collection installed in the EE
-#   - Uses ONLY awx.awx.* modules (NO controller_api)
+# Uses ansible.controller collection (NOT awx.awx)
+# - Dry run lists what would be copied and exits cleanly
+# - Bootstrap aware: expects target org has project+inventory already
+# - Selection via include/exclude wildcards (comma-separated)
+# - Normalises dash spacing to avoid "AZ - *" matching issues
 
 - name: "AWX: Copy Job Templates + Surveys (Bootstrap-aware, with Dry Run)"
   hosts: localhost
@@ -32,7 +17,7 @@
     # ---------------------------------------------------------------------
     tower_host: "{{ tower_host | default(omit) }}"
     tower_oauth_token: "{{ tower_oauth_token | default(omit) }}"
-    tower_verify_ssl: "{{ tower_verify_ssl | default(true) }}"
+    tower_verify_ssl: "{{ tower_verify_ssl | default(true) | bool }}"
 
     # ---------------------------------------------------------------------
     # Orgs
@@ -41,9 +26,7 @@
     target_org_name: "{{ target_org_name | default(omit) }}"
 
     # ---------------------------------------------------------------------
-    # Bootstrap-aware defaults:
-    #   Use the target org name for project + inventory names by default.
-    #   (Matches what you asked for: project name follows target_org_name like inventory.)
+    # Bootstrap-aware defaults: use target org name for project+inventory
     # ---------------------------------------------------------------------
     target_project_name: "{{ target_project_name | default(target_org_name) }}"
     target_inventory_name: "{{ target_inventory_name | default(target_org_name) }}"
@@ -84,7 +67,7 @@
     # Lookup orgs
     # ---------------------------------------------------------------------
     - name: Lookup source org
-      awx.awx.organization_info:
+      ansible.controller.organization_info:
         controller_host: "{{ tower_host }}"
         controller_oauthtoken: "{{ tower_oauth_token }}"
         validate_certs: "{{ tower_verify_ssl }}"
@@ -92,7 +75,7 @@
       register: src_org_rsp
 
     - name: Lookup target org
-      awx.awx.organization_info:
+      ansible.controller.organization_info:
         controller_host: "{{ tower_host }}"
         controller_oauthtoken: "{{ tower_oauth_token }}"
         validate_certs: "{{ tower_verify_ssl }}"
@@ -115,7 +98,7 @@
     # Lookup bootstrap-created project + inventory in target org
     # ---------------------------------------------------------------------
     - name: Lookup target project (bootstrap-created)
-      awx.awx.project_info:
+      ansible.controller.project_info:
         controller_host: "{{ tower_host }}"
         controller_oauthtoken: "{{ tower_oauth_token }}"
         validate_certs: "{{ tower_verify_ssl }}"
@@ -130,7 +113,7 @@
         fail_msg: "Target project '{{ target_project_name }}' not found in org '{{ target_org_name }}'. Run bootstrap first."
 
     - name: Lookup target inventory (bootstrap-created)
-      awx.awx.inventory_info:
+      ansible.controller.inventory_info:
         controller_host: "{{ tower_host }}"
         controller_oauthtoken: "{{ tower_oauth_token }}"
         validate_certs: "{{ tower_verify_ssl }}"
@@ -153,7 +136,7 @@
     # Fetch source templates
     # ---------------------------------------------------------------------
     - name: Fetch all job templates (controller-wide)
-      awx.awx.job_template_info:
+      ansible.controller.job_template_info:
         controller_host: "{{ tower_host }}"
         controller_oauthtoken: "{{ tower_oauth_token }}"
         validate_certs: "{{ tower_verify_ssl }}"
@@ -174,7 +157,7 @@
         available_template_names: "{{ src_jt_list | map(attribute='name') | list }}"
 
     # ---------------------------------------------------------------------
-    # Selection logic (survey-driven) - FIXED matching + dash/space normalised
+    # Selection logic (include/exclude)
     # ---------------------------------------------------------------------
     - name: Parse include/exclude lists into arrays
       ansible.builtin.set_fact:
@@ -197,7 +180,6 @@
 
     - name: Normalise include/exclude patterns and build combined regex strings
       vars:
-        # Normalise dash variants and any spacing around them to a canonical " - "
         include_norm: >-
           {{
             template_include_list
@@ -214,8 +196,6 @@
             | map('trim')
             | list
           }}
-
-        # Convert wildcard -> safe regex (anchored)
         include_regexes_calc: >-
           {{
             include_norm
@@ -234,7 +214,6 @@
             | map('regex_replace', '$', '$')
             | list
           }}
-
         include_combined_calc: >-
           {{
             ((include_regexes_calc | length) > 0)
@@ -245,7 +224,6 @@
             ((exclude_regexes_calc | length) > 0)
             | ternary('(?:' ~ (exclude_regexes_calc | join('|')) ~ ')', '')
           }}
-
       ansible.builtin.set_fact:
         include_regexes: "{{ include_regexes_calc }}"
         exclude_regexes: "{{ exclude_regexes_calc }}"
@@ -260,7 +238,7 @@
           - "include_combined={{ include_combined }}"
           - "exclude_combined={{ exclude_combined }}"
 
-    - name: Select job templates from source list according to include/exclude rules (CORRECT direction)
+    - name: Select job templates from source list according to include/exclude rules
       vars:
         name_norm: >-
           {{
@@ -269,7 +247,6 @@
             | regex_replace('\\s+', ' ')
             | trim
           }}
-
         include_hit: >-
           {{
             (copy_all_templates | bool)
@@ -280,14 +257,12 @@
               (name_norm is match(include_combined))
             )
           }}
-
         exclude_hit: >-
           {{
             (exclude_combined | length) > 0
             and
             (name_norm is match(exclude_combined))
           }}
-
       ansible.builtin.set_fact:
         selected_jt_raw: "{{ (selected_jt_raw | default([])) + ([item] if (include_hit and not exclude_hit) else []) }}"
       loop: "{{ src_jt_list }}"
@@ -370,22 +345,29 @@
 
     # ---------------------------------------------------------------------
     # Copy templates (real run)
-    # NOTE:
-    #   This uses awx.awx.job_template to upsert the template in the target org.
-    #   Surveys are copied via survey_spec/survey_enabled if present in source info.
     # ---------------------------------------------------------------------
-
     - name: Copy job templates into target org (bootstrap-aware)
       vars:
         src_name: "{{ item.name }}"
-        src_playbook: "{{ item.playbook | default(omit) }}"
-        src_job_type: "{{ item.job_type | default(omit) }}"
-        src_ee: "{{ item.execution_environment | default(omit) }}"
-        src_verbosity: "{{ item.verbosity | default(omit) }}"
-        src_forks: "{{ item.forks | default(omit) }}"
-        src_timeout: "{{ item.timeout | default(omit) }}"
+      ansible.controller.job_template:
+        controller_host: "{{ tower_host }}"
+        controller_oauthtoken: "{{ tower_oauth_token }}"
+        validate_certs: "{{ tower_verify_ssl }}"
 
-        # Ask-on-launch flags
+        name: "{{ src_name }}"
+        description: "{{ item.description | default('') }}"
+        organization: "{{ target_org_name }}"
+
+        project: "{{ target_project_name }}"
+        inventory: "{{ target_inventory_name }}"
+        playbook: "{{ item.playbook | default(omit) }}"
+        job_type: "{{ item.job_type | default(omit) }}"
+
+        execution_environment: "{{ item.execution_environment | default(omit) }}"
+        verbosity: "{{ item.verbosity | default(omit) }}"
+        forks: "{{ item.forks | default(omit) }}"
+        timeout: "{{ item.timeout | default(omit) }}"
+
         ask_inventory_on_launch: "{{ item.ask_inventory_on_launch | default(false) }}"
         ask_variables_on_launch: "{{ item.ask_variables_on_launch | default(false) }}"
         ask_limit_on_launch: "{{ item.ask_limit_on_launch | default(false) }}"
@@ -398,48 +380,10 @@
         ask_timeout_on_launch: "{{ item.ask_timeout_on_launch | default(false) }}"
         ask_diff_mode_on_launch: "{{ item.ask_diff_mode_on_launch | default(false) }}"
 
-        # Extra vars default
         extra_vars: "{{ item.extra_vars | default(omit) }}"
 
-        # Survey
         survey_enabled: "{{ item.survey_enabled | default(false) }}"
         survey_spec: "{{ item.survey_spec | default(omit) }}"
-
-      awx.awx.job_template:
-        controller_host: "{{ tower_host }}"
-        controller_oauthtoken: "{{ tower_oauth_token }}"
-        validate_certs: "{{ tower_verify_ssl }}"
-
-        name: "{{ src_name }}"
-        description: "{{ item.description | default('') }}"
-        organization: "{{ target_org_name }}"
-
-        project: "{{ target_project_name }}"
-        inventory: "{{ target_inventory_name }}"
-        playbook: "{{ src_playbook }}"
-        job_type: "{{ src_job_type }}"
-
-        execution_environment: "{{ src_ee }}"
-        verbosity: "{{ src_verbosity }}"
-        forks: "{{ src_forks }}"
-        timeout: "{{ src_timeout }}"
-
-        ask_inventory_on_launch: "{{ ask_inventory_on_launch }}"
-        ask_variables_on_launch: "{{ ask_variables_on_launch }}"
-        ask_limit_on_launch: "{{ ask_limit_on_launch }}"
-        ask_tags_on_launch: "{{ ask_tags_on_launch }}"
-        ask_skip_tags_on_launch: "{{ ask_skip_tags_on_launch }}"
-        ask_job_type_on_launch: "{{ ask_job_type_on_launch }}"
-        ask_verbosity_on_launch: "{{ ask_verbosity_on_launch }}"
-        ask_execution_environment_on_launch: "{{ ask_execution_environment_on_launch }}"
-        ask_forks_on_launch: "{{ ask_forks_on_launch }}"
-        ask_timeout_on_launch: "{{ ask_timeout_on_launch }}"
-        ask_diff_mode_on_launch: "{{ ask_diff_mode_on_launch }}"
-
-        extra_vars: "{{ extra_vars }}"
-
-        survey_enabled: "{{ survey_enabled }}"
-        survey_spec: "{{ survey_spec }}"
 
         state: present
       loop: "{{ copy_plan | default([]) }}"
