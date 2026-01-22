@@ -1,0 +1,20 @@
+# Base AWX Execution Environment image (same family as your main EE)
+FROM quay.io/ansible/awx-ee:24.6.1
+
+# Switch to root so we can install collections/tools into the image
+USER 0
+
+# Install the AWX/Controller Ansible collection used to manage AWX itself.
+# This enables modules like:
+# - awx.awx.job_template (including copy_from)
+# - awx.awx.organization
+# - awx.awx.inventory, etc.
+#
+# Notes:
+# - This does NOT include customer Azure credentials or anything sensitive.
+# - It is only used for "AWX admin" jobs (template replication, standardisation, etc.)
+RUN ansible-galaxy collection install awx.awx && \
+    ansible-galaxy collection list
+
+# Drop back to the non-root user expected by AWX EE runtime
+USER 1000

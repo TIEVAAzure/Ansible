@@ -1,0 +1,60 @@
+# -----------------------------------------------------------------------------
+# MG Azure Execution Environment
+# - Base: AWX EE
+# - Adds:
+#     * Azure CLI (pinned) in isolated venv (/opt/azcli)
+#     * azure.azcollection (pinned) via ansible-galaxy
+#     * Azure SDK Python deps required by azure.azcollection (pip install -r requirements.txt)
+# - Prints versions during build for traceability
+# -----------------------------------------------------------------------------
+FROM quay.io/ansible/awx-ee:24.6.1
+
+USER 0
+
+# ---- Version pins (change intentionally, rebuild, test, promote) -------------
+ARG AZ_CLI_VERSION="2.82.0"
+ARG AZURE_AZCOLLECTION_VERSION="3.13.0"
+
+# Where to install Ansible collections inside the image (explicit + predictable)
+ARG ANSIBLE_COLLECTIONS_PATH="/usr/share/ansible/collections"
+
+# ---- OS deps ----------------------------------------------------------------
+# python3-pip: needed to install Python dependencies required by azure.azcollection
+RUN dnf install -y python3-pip && \
+    dnf clean all
+
+# ---- Azure CLI (isolated venv) ----------------------------------------------
+# We install Azure CLI into /opt/azcli to avoid dependency conflicts with the
+# Python packages required by azure.azcollection (Azure SDK libs).
+RUN python3 -m venv /opt/azcli && \
+    /opt/azcli/bin/python -m pip install --upgrade pip && \
+    /opt/azcli/bin/python -m pip install "azure-cli==${AZ_CLI_VERSION}" && \
+    ln -sf /opt/azcli/bin/az /usr/local/bin/az && \
+    az version
+
+# ---- Ansible Azure collection (pinned) --------------------------------------
+COPY requirements.yml /tmp/requirements.yml
+RUN echo "Installing azure.azcollection==${AZURE_AZCOLLECTION_VERSION}" && \
+    mkdir -p "${ANSIBLE_COLLECTIONS_PATH}" && \
+    ansible-galaxy collection install -r /tmp/requirements.yml -p "${ANSIBLE_COLLECTIONS_PATH}" && \
+    ansible-galaxy collection list | grep -E '^azure\.azcollection'
+
+# ---- Python deps for azure.azcollection (Azure SDK, identity libs, etc.) -----
+# Ansible docs + Microsoft docs recommend installing the Python packages listed
+# in the collection’s requirements.txt on the execution host. :contentReference[oaicite:2]{index=2}
+#
+# IMPORTANT:
+# - We install these into the system Python environment used by Ansible modules.
+# - Azure CLI stays isolated in /opt/azcli to avoid dependency conflicts. :contentReference[oaicite:3]{index=3}
+RUN python3 -m pip install --upgrade pip && \
+    python3 -m pip install --no-cache-dir -r \
+      "${ANSIBLE_COLLECTIONS_PATH}/ansible_collections/azure/azcollection/requirements.txt" && \
+    python3 -m pip check
+
+# ---- Build-time visibility ---------------------------------------------------
+# Show key versions in build output (handy for audit/troubleshooting)
+RUN ansible --version && \
+    az version && \
+    python3 -m pip show azure-identity || true
+
+USER 1000
