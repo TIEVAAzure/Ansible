@@ -1,0 +1,299 @@
+---
+- name: "AWX: Copy Job Templates + Surveys (Bootstrap-aware)"
+  hosts: localhost
+  gather_facts: false
+  collections:
+    - awx.awx
+
+  vars:
+    # ===== Shared repo mapping (bootstrap created this project per org) =====
+    target_project_name: "{{ target_org_name }} - TIEVAAzure-Ansible"
+
+    # ===== Localhost inventory mapping (bootstrap created this per org) =====
+    target_localhost_inventory_name: "{{ target_org_name }} - Localhost"
+    source_localhost_inventory_name: "Localhost"   # how it appears in MASTER org templates
+
+    # Behaviour
+    # If a template references an inventory other than source_localhost_inventory_name,
+    # we'll omit inventory and log it (phase 2 improvement).
+    allow_only_localhost_inventory_mapping: true
+
+    # If true: create template even if creds missing (omit creds) and log
+    # (this matches what you want)
+    create_templates_without_missing_creds: true
+
+    # Controller connection (AWX OSS via extra vars)
+    controller_host: "{{ tower_host }}"
+    controller_oauthtoken: "{{ tower_oauth_token }}"
+    controller_validate_certs: "{{ tower_verify_ssl | default(true) }}"
+
+  tasks:
+    # ---------------------------------------------------------------------
+    # Guards
+    # ---------------------------------------------------------------------
+    - name: Guard - ensure controller connection is available
+      ansible.builtin.assert:
+        that:
+          - tower_host is defined and (tower_host | length > 0)
+          - tower_oauth_token is defined and (tower_oauth_token | length > 0)
+        fail_msg: >
+          Controller connection not configured.
+          Provide tower_host and tower_oauth_token via the Job Template "Variables" box.
+
+    - name: Guard - ensure org inputs provided
+      ansible.builtin.assert:
+        that:
+          - source_org_name is defined and (source_org_name | length > 0)
+          - target_org_name is defined and (target_org_name | length > 0)
+        fail_msg: "source_org_name and target_org_name are required."
+
+    # ---------------------------------------------------------------------
+    # Lookups: org IDs
+    # ---------------------------------------------------------------------
+    - name: Get source org ID
+      awx.awx.controller_api:
+        method: GET
+        endpoint: "organizations/"
+        query_params:
+          name: "{{ source_org_name }}"
+        controller_host: "{{ controller_host }}"
+        controller_oauthtoken: "{{ controller_oauthtoken }}"
+        validate_certs: "{{ controller_validate_certs }}"
+      register: src_org_lookup
+
+    - name: Get target org ID
+      awx.awx.controller_api:
+        method: GET
+        endpoint: "organizations/"
+        query_params:
+          name: "{{ target_org_name }}"
+        controller_host: "{{ controller_host }}"
+        controller_oauthtoken: "{{ controller_oauthtoken }}"
+        validate_certs: "{{ controller_validate_certs }}"
+      register: dst_org_lookup
+
+    - name: Guard - org lookups returned exactly one result each
+      ansible.builtin.assert:
+        that:
+          - (src_org_lookup.json.count | int) == 1
+          - (dst_org_lookup.json.count | int) == 1
+        fail_msg: "Expected exactly 1 org result for both source and target. Check org names."
+
+    - name: Set org IDs
+      ansible.builtin.set_fact:
+        source_org_id: "{{ src_org_lookup.json.results[0].id }}"
+        target_org_id: "{{ dst_org_lookup.json.results[0].id }}"
+
+    # ---------------------------------------------------------------------
+    # Lookups: target project exists (bootstrap created it)
+    # ---------------------------------------------------------------------
+    - name: Lookup target project by org + name
+      awx.awx.controller_api:
+        method: GET
+        endpoint: "projects/"
+        query_params:
+          organization: "{{ target_org_id }}"
+          name: "{{ target_project_name }}"
+        controller_host: "{{ controller_host }}"
+        controller_oauthtoken: "{{ controller_oauthtoken }}"
+        validate_certs: "{{ controller_validate_certs }}"
+      register: dst_project_lookup
+
+    - name: Guard - target project exists (bootstrap must run first)
+      ansible.builtin.assert:
+        that:
+          - (dst_project_lookup.json.count | int) == 1
+        fail_msg: >
+          Target project '{{ target_project_name }}' not found in org '{{ target_org_name }}'.
+          Run the bootstrap playbook first (or fix naming).
+
+    - name: Set target project ID
+      ansible.builtin.set_fact:
+        target_project_id: "{{ dst_project_lookup.json.results[0].id }}"
+
+    # ---------------------------------------------------------------------
+    # Lookups: target localhost inventory exists (bootstrap created it)
+    # ---------------------------------------------------------------------
+    - name: Lookup target localhost inventory by org + name
+      awx.awx.controller_api:
+        method: GET
+        endpoint: "inventories/"
+        query_params:
+          organization: "{{ target_org_id }}"
+          name: "{{ target_localhost_inventory_name }}"
+        controller_host: "{{ controller_host }}"
+        controller_oauthtoken: "{{ controller_oauthtoken }}"
+        validate_certs: "{{ controller_validate_certs }}"
+      register: dst_local_inv_lookup
+
+    - name: Guard - target localhost inventory exists (bootstrap must run first)
+      ansible.builtin.assert:
+        that:
+          - (dst_local_inv_lookup.json.count | int) == 1
+        fail_msg: >
+          Target inventory '{{ target_localhost_inventory_name }}' not found in org '{{ target_org_name }}'.
+          Run the bootstrap playbook first (or fix naming).
+
+    - name: Set target localhost inventory ID
+      ansible.builtin.set_fact:
+        target_localhost_inventory_id: "{{ dst_local_inv_lookup.json.results[0].id }}"
+
+    # ---------------------------------------------------------------------
+    # Preload target org credentials (map name -> id)
+    # ---------------------------------------------------------------------
+    - name: Fetch all credentials in target org
+      awx.awx.controller_api:
+        method: GET
+        endpoint: "credentials/"
+        query_params:
+          organization: "{{ target_org_id }}"
+          page_size: 200
+        controller_host: "{{ controller_host }}"
+        controller_oauthtoken: "{{ controller_oauthtoken }}"
+        validate_certs: "{{ controller_validate_certs }}"
+      register: dst_creds_list
+
+    - name: Build target credential name->id map
+      ansible.builtin.set_fact:
+        dst_cred_map: >-
+          {{
+            dict(
+              (dst_creds_list.json.results | default([]))
+              | map(attribute='name')
+              | zip((dst_creds_list.json.results | default([])) | map(attribute='id'))
+            )
+          }}
+
+    # ---------------------------------------------------------------------
+    # Fetch source org job templates
+    # ---------------------------------------------------------------------
+    - name: Fetch all job templates in source org
+      awx.awx.controller_api:
+        method: GET
+        endpoint: "job_templates/"
+        query_params:
+          organization: "{{ source_org_id }}"
+          page_size: 200
+        controller_host: "{{ controller_host }}"
+        controller_oauthtoken: "{{ controller_oauthtoken }}"
+        validate_certs: "{{ controller_validate_certs }}"
+      register: src_jt_list
+
+    - name: Initialise tracking
+      ansible.builtin.set_fact:
+        copied_templates: []
+        templates_missing_creds: {}
+        templates_inventory_not_mapped: []
+
+    - name: Copy templates into target org (project/inventory pre-mapped)
+      vars:
+        # Creds referenced by the source template (names)
+        src_cred_names: "{{ (src_jt.summary_fields.credentials | default([])) | map(attribute='name') | list }}"
+        missing_cred_names: "{{ src_cred_names | reject('in', (dst_cred_map.keys() | list)) | list }}"
+        matched_cred_ids: "{{ src_cred_names | reject('in', missing_cred_names) | map('extract', dst_cred_map) | list }}"
+
+        # Inventory mapping rule:
+        # Only map source "Localhost" inventory name -> target localhost inventory id
+        src_inv_name: "{{ src_jt.summary_fields.inventory.name | default('') }}"
+        inventory_for_template: >-
+          {{
+            (src_inv_name == source_localhost_inventory_name)
+            | ternary(target_localhost_inventory_id, omit)
+          }}
+
+        # Execution environment (global by name if present)
+        src_ee_name: "{{ src_jt.summary_fields.execution_environment.name | default('') }}"
+
+      block:
+        - name: Log missing creds for this template (if any)
+          ansible.builtin.set_fact:
+            templates_missing_creds: "{{ templates_missing_creds | combine({ src_jt.name: missing_cred_names }) }}"
+          when: (missing_cred_names | length) > 0
+
+        - name: Log inventory not mapped (non-localhost inventory)
+          ansible.builtin.set_fact:
+            templates_inventory_not_mapped: "{{ templates_inventory_not_mapped + [src_jt.name] }}"
+          when:
+            - allow_only_localhost_inventory_mapping | bool
+            - (src_inv_name | length > 0)
+            - (src_inv_name != source_localhost_inventory_name)
+
+        - name: Create/Update job template in target org (surveys copied)
+          awx.awx.job_template:
+            name: "{{ src_jt.name }}"
+            description: "{{ src_jt.description | default('') }}"
+            organization: "{{ target_org_name }}"
+            state: present
+
+            # Always force onto the target org project created by bootstrap
+            project: "{{ target_project_name }}"
+            playbook: "{{ src_jt.playbook }}"
+
+            # Only map localhost inventory; otherwise omit (phase 2)
+            inventory: >-
+              {{
+                (allow_only_localhost_inventory_mapping | bool)
+                | ternary(inventory_for_template, (src_inv_name | length > 0) | ternary(inventory_for_template, omit))
+              }}
+
+            # Execution Environment (global EE by name is fine if present)
+            execution_environment: "{{ (src_ee_name | length > 0) | ternary(src_ee_name, omit) }}"
+
+            # Core settings
+            job_type: "{{ src_jt.job_type | default('run') }}"
+            become_enabled: "{{ src_jt.become_enabled | default(false) }}"
+            diff_mode: "{{ src_jt.diff_mode | default(false) }}"
+            allow_simultaneous: "{{ src_jt.allow_simultaneous | default(false) }}"
+
+            # Ask-on-launch flags (do not lose these)
+            ask_credential_on_launch: "{{ src_jt.ask_credential_on_launch | default(false) }}"
+            ask_inventory_on_launch: "{{ src_jt.ask_inventory_on_launch | default(false) }}"
+            ask_variables_on_launch: "{{ src_jt.ask_variables_on_launch | default(false) }}"
+            ask_limit_on_launch: "{{ src_jt.ask_limit_on_launch | default(false) }}"
+            ask_tags_on_launch: "{{ src_jt.ask_tags_on_launch | default(false) }}"
+            ask_skip_tags_on_launch: "{{ src_jt.ask_skip_tags_on_launch | default(false) }}"
+            ask_job_type_on_launch: "{{ src_jt.ask_job_type_on_launch | default(false) }}"
+            ask_verbosity_on_launch: "{{ src_jt.ask_verbosity_on_launch | default(false) }}"
+            ask_diff_mode_on_launch: "{{ src_jt.ask_diff_mode_on_launch | default(false) }}"
+
+            # Vars/tags/limits
+            extra_vars: "{{ src_jt.extra_vars | default(omit) }}"
+            job_tags: "{{ src_jt.job_tags | default('') }}"
+            skip_tags: "{{ src_jt.skip_tags | default('') }}"
+            limit: "{{ src_jt.limit | default('') }}"
+            verbosity: "{{ src_jt.verbosity | default(0) }}"
+
+            # Surveys
+            survey_enabled: "{{ src_jt.survey_enabled | default(false) }}"
+            survey_spec: "{{ src_jt.survey_spec | default(omit) }}"
+
+            # Credentials:
+            # - If all creds exist in target -> attach IDs
+            # - If creds missing -> omit creds (create template anyway)
+            credentials: >-
+              {{
+                ((missing_cred_names | length) == 0)
+                | ternary(matched_cred_ids, omit)
+              }}
+
+            controller_host: "{{ controller_host }}"
+            controller_oauthtoken: "{{ controller_oauthtoken }}"
+            validate_certs: "{{ controller_validate_certs }}"
+          when:
+            - create_templates_without_missing_creds | bool or (missing_cred_names | length) == 0
+
+        - name: Mark template copied
+          ansible.builtin.set_fact:
+            copied_templates: "{{ copied_templates + [src_jt.name] }}"
+
+      loop: "{{ src_jt_list.json.results | default([]) }}"
+      loop_control:
+        loop_var: src_jt
+
+    - name: Copy summary
+      ansible.builtin.debug:
+        msg:
+          - "Copy complete. Source org='{{ source_org_name }}' -> Target org='{{ target_org_name }}'"
+          - "Templates copied: {{ copied_templates | length }}"
+          - "Templates with missing creds (created without creds): {{ templates_missing_creds | length }}"
+          - "Templates with inventory not mapped (needs phase 2): {{ templates_inventory_not_mapped | length }}"
