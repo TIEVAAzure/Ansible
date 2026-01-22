@@ -109,11 +109,7 @@
         scm_clean: true
         scm_delete_on_update: true
         scm_update_on_launch: true
-        scm_credential: >-
-          {{
-            (shared_project_scm_credential_name | length) > 0
-            | ternary(shared_project_scm_credential_name, omit)
-          }}
+        scm_credential: "{{ shared_project_scm_credential_name | default('') | string | trim | default(omit, true) }}"
         controller_host: "{{ controller_host }}"
         controller_oauthtoken: "{{ controller_oauthtoken }}"
         validate_certs: "{{ controller_validate_certs }}"
