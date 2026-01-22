@@ -1,0 +1,38 @@
+---
+- name: EE smoke test
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Show Ansible version
+      command: ansible --version
+      register: ansible_ver
+      changed_when: false
+
+    - debug:
+        var: ansible_ver.stdout_lines
+
+    - name: Show Azure CLI version
+      command: az version
+      register: az_ver
+      changed_when: false
+      failed_when: false
+
+    - debug:
+        var: az_ver.stdout_lines
+
+    - name: List key Ansible collections
+      command: ansible-galaxy collection list
+      register: galaxy_list
+      changed_when: false
+
+    - name: Confirm azure.azcollection is installed
+      assert:
+        that:
+          - "'azure.azcollection' in galaxy_list.stdout"
+        fail_msg: "azure.azcollection not found in ansible-galaxy collection list output"
+
+    - name: Confirm awx.awx is installed
+      assert:
+        that:
+          - "'awx.awx' in galaxy_list.stdout"
+        fail_msg: "awx.awx not found in ansible-galaxy collection list output"
