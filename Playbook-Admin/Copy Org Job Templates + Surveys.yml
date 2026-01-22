@@ -149,7 +149,8 @@
       register: src_jt_rsp
 
     # ---------------------------------------------------------------------
-    # Selection logic (survey-driven)
+        # ---------------------------------------------------------------------
+    # Selection logic (survey-driven) - dash AND spacing normalised
     # ---------------------------------------------------------------------
     - name: Parse include/exclude lists into arrays
       ansible.builtin.set_fact:
@@ -170,24 +171,71 @@
             | list
           }}
 
-    - name: Select job templates from source list according to include/exclude rules
+    - name: Build list of available source template names (for troubleshooting)
+      ansible.builtin.set_fact:
+        available_template_names: "{{ (src_jt_rsp.json.results | default([])) | map(attribute='name') | list }}"
+
+    - name: Select job templates from source list according to include/exclude rules (strong normalisation)
       vars:
-        _name: "{{ item.name }}"
+        # Normalise any dash type and ANY spacing around it to " - "
+        # Also collapse whitespace.
+        name_norm: >-
+          {{
+            (item.name | string)
+            | regex_replace('\\s*[–—-]\\s*', ' - ')
+            | regex_replace('\\s+', ' ')
+            | trim
+          }}
+
+        include_norm: >-
+          {{
+            template_include_list
+            | map('regex_replace', '\\s*[–—-]\\s*', ' - ')
+            | map('regex_replace', '\\s+', ' ')
+            | map('trim')
+            | list
+          }}
+
+        exclude_norm: >-
+          {{
+            template_exclude_list
+            | map('regex_replace', '\\s*[–—-]\\s*', ' - ')
+            | map('regex_replace', '\\s+', ' ')
+            | map('trim')
+            | list
+          }}
+
+        # Convert wildcard patterns to regex
+        include_regexes: >-
+          {{
+            include_norm
+            | map('regex_escape')
+            | map('regex_replace', '\\\\*', '.*')
+            | map('regex_replace', '^', '^')
+            | map('regex_replace', '$', '$')
+            | list
+          }}
+
+        exclude_regexes: >-
+          {{
+            exclude_norm
+            | map('regex_escape')
+            | map('regex_replace', '\\\\*', '.*')
+            | map('regex_replace', '^', '^')
+            | map('regex_replace', '$', '$')
+            | list
+          }}
 
         include_hit: >-
           {{
             (copy_all_templates | bool)
             or
             (
-              (template_include_list | length) > 0
+              (include_regexes | length) > 0
               and
               (
-                template_include_list
-                | map('regex_escape')
-                | map('regex_replace', '\\*', '.*')
-                | map('regex_replace', '^', '^')
-                | map('regex_replace', '$', '$')
-                | select('match', _name)
+                include_regexes
+                | select('match', name_norm)
                 | list
                 | length
               ) > 0
@@ -196,15 +244,11 @@
 
         exclude_hit: >-
           {{
-            (template_exclude_list | length) > 0
+            (exclude_regexes | length) > 0
             and
             (
-              template_exclude_list
-              | map('regex_escape')
-              | map('regex_replace', '\\*', '.*')
-              | map('regex_replace', '^', '^')
-              | map('regex_replace', '$', '$')
-              | select('match', _name)
+              exclude_regexes
+              | select('match', name_norm)
               | list
               | length
             ) > 0
@@ -218,6 +262,16 @@
       ansible.builtin.set_fact:
         selected_template_names: "{{ (selected_jt_raw | default([])) | map(attribute='name') | list }}"
 
+    - name: If selection is empty, print first 50 available template names (to help pick patterns)
+      ansible.builtin.debug:
+        msg:
+          - "No templates matched selection."
+          - "You used: copy_all_templates={{ copy_all_templates }}, include='{{ template_include | default('') }}', exclude='{{ template_exclude | default('') }}'"
+          - "TIP: Try include 'AZ*,AVD*' to avoid dash/spacing issues entirely."
+          - "First 50 available template names:"
+          - "{{ available_template_names[:50] }}"
+      when: (selected_jt_raw | default([]) | length) == 0
+
     - name: Guard - selection not empty
       ansible.builtin.assert:
         that:
@@ -227,6 +281,7 @@
           copy_all_templates={{ copy_all_templates }},
           include='{{ template_include | default('') }}',
           exclude='{{ template_exclude | default('') }}'.
+
 
     # ---------------------------------------------------------------------
     # Build a minimal plan summary (missing creds + inventory mapping)
