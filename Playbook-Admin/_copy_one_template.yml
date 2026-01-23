@@ -1,42 +1,31 @@
 ---
-# Expects variables from parent:
-# - src_jt (one template item)
-# - api_base, controller_token, controller_validate_certs
-# - dst_cred_map
-# - target_org_name, target_project_name
-# - source_localhost_inventory_name, target_localhost_inventory_name
-# - allow_only_localhost_inventory_mapping, create_templates_without_missing_creds
-# - copied_templates, templates_missing_creds, templates_inventory_not_mapped
-
-- name: Fetch template detail
+- name: Fetch template detail (full)
   ansible.builtin.uri:
-    url: "{{ api_base }}/job_templates/{{ src_jt.id }}/"
+    url: "{{ awx_api_base }}/job_templates/{{ src_jt.id }}/"
     method: GET
-    headers:
-      Authorization: "Bearer {{ controller_token }}"
-      Accept: "application/json"
+    headers: "{{ awx_headers }}"
     validate_certs: "{{ controller_validate_certs }}"
     return_content: true
   register: jt_detail
 
-- name: Fetch template survey spec (ignore if not present)
+- name: Fetch template survey spec (if enabled)
   ansible.builtin.uri:
-    url: "{{ api_base }}/job_templates/{{ src_jt.id }}/survey_spec/"
+    url: "{{ awx_api_base }}/job_templates/{{ src_jt.id }}/survey_spec/"
     method: GET
-    headers:
-      Authorization: "Bearer {{ controller_token }}"
-      Accept: "application/json"
+    headers: "{{ awx_headers }}"
     validate_certs: "{{ controller_validate_certs }}"
     return_content: true
-    status_code: [200, 404]
   register: jt_survey
-  changed_when: false
+  failed_when: false
 
-- name: Compute credential + inventory mapping
+- name: Compute credential mapping for this template (by NAME)
   ansible.builtin.set_fact:
     src_cred_names: "{{ (jt_detail.json.summary_fields.credentials | default([])) | map(attribute='name') | list }}"
-    missing_cred_names: "{{ src_cred_names | reject('in', (dst_cred_map.keys() | list)) | list }}"
-    matched_cred_ids: "{{ src_cred_names | reject('in', missing_cred_names) | map('extract', dst_cred_map) | list }}"
+    missing_cred_names: "{{ src_cred_names | reject('in', dst_cred_names) | list }}"
+    matched_cred_names: "{{ src_cred_names | reject('in', missing_cred_names) | list }}"
+
+- name: Compute inventory mapping for this template
+  ansible.builtin.set_fact:
     src_inv_name: "{{ jt_detail.json.summary_fields.inventory.name | default('') }}"
     mapped_inventory_name: >-
       {{
@@ -44,7 +33,18 @@
         | ternary(target_localhost_inventory_name, omit)
       }}
 
-- name: Log missing creds (if any)
+- name: Debug - per-template mapping
+  ansible.builtin.debug:
+    msg:
+      - "TEMPLATE={{ jt_detail.json.name }}"
+      - "src_inv_name={{ src_inv_name }}"
+      - "mapped_inventory_name={{ mapped_inventory_name | default('OMIT') }}"
+      - "src_cred_names={{ src_cred_names }}"
+      - "missing_cred_names={{ missing_cred_names }}"
+      - "matched_cred_names={{ matched_cred_names }}"
+  when: debug_mode | bool
+
+- name: Log missing creds for this template (if any)
   ansible.builtin.set_fact:
     templates_missing_creds: "{{ templates_missing_creds | combine({ jt_detail.json.name: missing_cred_names }) }}"
   when: (missing_cred_names | length) > 0
@@ -54,10 +54,10 @@
     templates_inventory_not_mapped: "{{ templates_inventory_not_mapped + [jt_detail.json.name] }}"
   when:
     - allow_only_localhost_inventory_mapping | bool
-    - (src_inv_name | length) > 0
+    - (src_inv_name | length > 0)
     - (src_inv_name != source_localhost_inventory_name)
 
-- name: Create/Update job template in target org
+- name: Create/Update job template in target org (survey copied)
   awx.awx.job_template:
     name: "{{ jt_detail.json.name }}"
     description: "{{ jt_detail.json.description | default('') }}"
@@ -67,19 +67,23 @@
     project: "{{ target_project_name }}"
     playbook: "{{ jt_detail.json.playbook }}"
 
+    # Only map localhost inventory; otherwise omit
     inventory: >-
       {{
         (allow_only_localhost_inventory_mapping | bool)
         | ternary(mapped_inventory_name, omit)
       }}
 
+    # Execution Environment (by name, if present)
     execution_environment: "{{ jt_detail.json.summary_fields.execution_environment.name | default(omit) }}"
 
+    # Core settings
     job_type: "{{ jt_detail.json.job_type | default('run') }}"
     become_enabled: "{{ jt_detail.json.become_enabled | default(false) }}"
     diff_mode: "{{ jt_detail.json.diff_mode | default(false) }}"
     allow_simultaneous: "{{ jt_detail.json.allow_simultaneous | default(false) }}"
 
+    # Ask-on-launch flags
     ask_credential_on_launch: "{{ jt_detail.json.ask_credential_on_launch | default(false) }}"
     ask_inventory_on_launch: "{{ jt_detail.json.ask_inventory_on_launch | default(false) }}"
     ask_variables_on_launch: "{{ jt_detail.json.ask_variables_on_launch | default(false) }}"
@@ -90,30 +94,28 @@
     ask_verbosity_on_launch: "{{ jt_detail.json.ask_verbosity_on_launch | default(false) }}"
     ask_diff_mode_on_launch: "{{ jt_detail.json.ask_diff_mode_on_launch | default(false) }}"
 
+    # Vars/tags/limits
     extra_vars: "{{ jt_detail.json.extra_vars | default(omit) }}"
     job_tags: "{{ jt_detail.json.job_tags | default('') }}"
     skip_tags: "{{ jt_detail.json.skip_tags | default('') }}"
     limit: "{{ jt_detail.json.limit | default('') }}"
     verbosity: "{{ jt_detail.json.verbosity | default(0) }}"
 
+    # Surveys
     survey_enabled: "{{ jt_detail.json.survey_enabled | default(false) }}"
-    survey_spec: >-
-      {{
-        (jt_detail.json.survey_enabled | default(false) | bool)
-        | ternary(
-            (jt_survey.json if (jt_survey.status | int) == 200 else omit),
-            omit
-          )
-      }}
+    survey_spec: "{{ (jt_detail.json.survey_enabled | default(false)) | bool | ternary(jt_survey.json, omit) }}"
 
+    # Credentials:
+    # - If all creds exist -> attach by NAME
+    # - If missing -> omit (and still create) when allowed
     credentials: >-
       {{
         ((missing_cred_names | length) == 0)
-        | ternary(matched_cred_ids, omit)
+        | ternary(matched_cred_names, omit)
       }}
 
     controller_host: "{{ controller_host }}"
-    controller_oauthtoken: "{{ controller_token }}"
+    controller_oauthtoken: "{{ controller_oauthtoken }}"
     validate_certs: "{{ controller_validate_certs }}"
   when:
     - (create_templates_without_missing_creds | bool) or ((missing_cred_names | length) == 0)
