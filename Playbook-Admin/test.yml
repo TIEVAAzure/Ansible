@@ -1,0 +1,7 @@
+- name: Show installed collections
+  ansible.builtin.command: ansible-galaxy collection list
+  register: galaxy_list
+  changed_when: false
+
+- debug:
+    var: galaxy_list.stdout_lines
