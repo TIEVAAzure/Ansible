@@ -1,125 +1,219 @@
 ---
-- name: Fetch template detail (full)
+# Expects loop_var: src_jt
+# Uses vars from parent play:
+# - controller_api_base, controller_headers, controller_validate_certs
+# - target_org_id, target_project_id, target_localhost_inventory_id
+# - source_localhost_inventory_name, allow_only_localhost_inventory_mapping
+# - dst_cred_map, create_templates_without_missing_creds
+# - tracking facts: copied_templates, templates_missing_creds, templates_inventory_not_mapped
+
+- name: Fetch source template detail (full)
   ansible.builtin.uri:
-    url: "{{ awx_api_base }}/job_templates/{{ src_jt.id }}/"
+    url: "{{ controller_api_base }}/job_templates/{{ src_jt.id }}/"
     method: GET
-    headers: "{{ awx_headers }}"
+    headers: "{{ controller_headers }}"
     validate_certs: "{{ controller_validate_certs }}"
     return_content: true
   register: jt_detail
 
-- name: Fetch template survey spec (if enabled)
+- name: Fetch source template survey spec (if enabled)
   ansible.builtin.uri:
-    url: "{{ awx_api_base }}/job_templates/{{ src_jt.id }}/survey_spec/"
+    url: "{{ controller_api_base }}/job_templates/{{ src_jt.id }}/survey_spec/"
     method: GET
-    headers: "{{ awx_headers }}"
+    headers: "{{ controller_headers }}"
     validate_certs: "{{ controller_validate_certs }}"
     return_content: true
   register: jt_survey
   failed_when: false
 
-- name: Compute credential mapping for this template (by NAME)
+- name: Compute credential mapping for this template
   ansible.builtin.set_fact:
-    src_cred_names: "{{ (jt_detail.json.summary_fields.credentials | default([])) | map(attribute='name') | list }}"
-    missing_cred_names: "{{ src_cred_names | reject('in', dst_cred_names) | list }}"
-    matched_cred_names: "{{ src_cred_names | reject('in', missing_cred_names) | list }}"
+    _src_cred_names: "{{ (jt_detail.json.summary_fields.credentials | default([])) | map(attribute='name') | list }}"
+    _missing_cred_names: "{{ _src_cred_names | reject('in', (dst_cred_map.keys() | list)) | list }}"
+    _matched_cred_ids: "{{ _src_cred_names | reject('in', _missing_cred_names) | map('extract', dst_cred_map) | list }}"
 
 - name: Compute inventory mapping for this template
   ansible.builtin.set_fact:
-    src_inv_name: "{{ jt_detail.json.summary_fields.inventory.name | default('') }}"
-    mapped_inventory_name: >-
+    _src_inv_name: "{{ jt_detail.json.summary_fields.inventory.name | default('') }}"
+    _mapped_inventory_id: >-
       {{
-        (src_inv_name == source_localhost_inventory_name)
-        | ternary(target_localhost_inventory_name, omit)
+        (_src_inv_name == source_localhost_inventory_name)
+        | ternary(target_localhost_inventory_id, omit)
       }}
-
-- name: Debug - per-template mapping
-  ansible.builtin.debug:
-    msg:
-      - "TEMPLATE={{ jt_detail.json.name }}"
-      - "src_inv_name={{ src_inv_name }}"
-      - "mapped_inventory_name={{ mapped_inventory_name | default('OMIT') }}"
-      - "src_cred_names={{ src_cred_names }}"
-      - "missing_cred_names={{ missing_cred_names }}"
-      - "matched_cred_names={{ matched_cred_names }}"
-  when: debug_mode | bool
 
 - name: Log missing creds for this template (if any)
   ansible.builtin.set_fact:
-    templates_missing_creds: "{{ templates_missing_creds | combine({ jt_detail.json.name: missing_cred_names }) }}"
-  when: (missing_cred_names | length) > 0
+    templates_missing_creds: "{{ templates_missing_creds | combine({ jt_detail.json.name: _missing_cred_names }) }}"
+  when: (_missing_cred_names | length) > 0
 
 - name: Log inventory not mapped (non-localhost inventory)
   ansible.builtin.set_fact:
     templates_inventory_not_mapped: "{{ templates_inventory_not_mapped + [jt_detail.json.name] }}"
   when:
     - allow_only_localhost_inventory_mapping | bool
-    - (src_inv_name | length > 0)
-    - (src_inv_name != source_localhost_inventory_name)
+    - (_src_inv_name | length > 0)
+    - (_src_inv_name != source_localhost_inventory_name)
 
-- name: Create/Update job template in target org (survey copied)
-  awx.awx.job_template:
-    name: "{{ jt_detail.json.name }}"
-    description: "{{ jt_detail.json.description | default('') }}"
-    organization: "{{ target_org_name }}"
-    state: present
-
-    project: "{{ target_project_name }}"
-    playbook: "{{ jt_detail.json.playbook }}"
-
-    # Only map localhost inventory; otherwise omit
-    inventory: >-
-      {{
-        (allow_only_localhost_inventory_mapping | bool)
-        | ternary(mapped_inventory_name, omit)
-      }}
-
-    # Execution Environment (by name, if present)
-    execution_environment: "{{ jt_detail.json.summary_fields.execution_environment.name | default(omit) }}"
-
-    # Core settings
-    job_type: "{{ jt_detail.json.job_type | default('run') }}"
-    become_enabled: "{{ jt_detail.json.become_enabled | default(false) }}"
-    diff_mode: "{{ jt_detail.json.diff_mode | default(false) }}"
-    allow_simultaneous: "{{ jt_detail.json.allow_simultaneous | default(false) }}"
-
-    # Ask-on-launch flags
-    ask_credential_on_launch: "{{ jt_detail.json.ask_credential_on_launch | default(false) }}"
-    ask_inventory_on_launch: "{{ jt_detail.json.ask_inventory_on_launch | default(false) }}"
-    ask_variables_on_launch: "{{ jt_detail.json.ask_variables_on_launch | default(false) }}"
-    ask_limit_on_launch: "{{ jt_detail.json.ask_limit_on_launch | default(false) }}"
-    ask_tags_on_launch: "{{ jt_detail.json.ask_tags_on_launch | default(false) }}"
-    ask_skip_tags_on_launch: "{{ jt_detail.json.ask_skip_tags_on_launch | default(false) }}"
-    ask_job_type_on_launch: "{{ jt_detail.json.ask_job_type_on_launch | default(false) }}"
-    ask_verbosity_on_launch: "{{ jt_detail.json.ask_verbosity_on_launch | default(false) }}"
-    ask_diff_mode_on_launch: "{{ jt_detail.json.ask_diff_mode_on_launch | default(false) }}"
-
-    # Vars/tags/limits
-    extra_vars: "{{ jt_detail.json.extra_vars | default(omit) }}"
-    job_tags: "{{ jt_detail.json.job_tags | default('') }}"
-    skip_tags: "{{ jt_detail.json.skip_tags | default('') }}"
-    limit: "{{ jt_detail.json.limit | default('') }}"
-    verbosity: "{{ jt_detail.json.verbosity | default(0) }}"
-
-    # Surveys
-    survey_enabled: "{{ jt_detail.json.survey_enabled | default(false) }}"
-    survey_spec: "{{ (jt_detail.json.survey_enabled | default(false)) | bool | ternary(jt_survey.json, omit) }}"
-
-    # Credentials:
-    # - If all creds exist -> attach by NAME
-    # - If missing -> omit (and still create) when allowed
-    credentials: >-
-      {{
-        ((missing_cred_names | length) == 0)
-        | ternary(matched_cred_names, omit)
-      }}
-
-    controller_host: "{{ controller_host }}"
-    controller_oauthtoken: "{{ controller_oauthtoken }}"
+# Optional: map Execution Environment name -> id (global list)
+- name: Lookup execution environment id by name (if present on source)
+  ansible.builtin.uri:
+    url: "{{ controller_api_base }}/execution_environments/?name={{ (jt_detail.json.summary_fields.execution_environment.name | default('')) | urlencode }}"
+    method: GET
+    headers: "{{ controller_headers }}"
     validate_certs: "{{ controller_validate_certs }}"
+    return_content: true
+  register: ee_lookup
+  when: (jt_detail.json.summary_fields.execution_environment.name | default('') | length) > 0
+
+- name: Set execution environment id (if found)
+  ansible.builtin.set_fact:
+    _ee_id: "{{ (ee_lookup.json.count | int) | ternary(ee_lookup.json.results[0].id, omit) }}"
   when:
-    - (create_templates_without_missing_creds | bool) or ((missing_cred_names | length) == 0)
+    - (jt_detail.json.summary_fields.execution_environment.name | default('') | length) > 0
+    - (ee_lookup.json.count | default(0) | int) > 0
+
+- name: Lookup target template by org + name
+  ansible.builtin.uri:
+    url: "{{ controller_api_base }}/job_templates/?organization={{ target_org_id }}&name={{ jt_detail.json.name | urlencode }}"
+    method: GET
+    headers: "{{ controller_headers }}"
+    validate_certs: "{{ controller_validate_certs }}"
+    return_content: true
+  register: tgt_jt_lookup
+
+- name: Create target job template (if missing)
+  ansible.builtin.uri:
+    url: "{{ controller_api_base }}/job_templates/"
+    method: POST
+    headers: "{{ controller_headers }}"
+    validate_certs: "{{ controller_validate_certs }}"
+    body_format: json
+    body:
+      name: "{{ jt_detail.json.name }}"
+      description: "{{ jt_detail.json.description | default('') }}"
+      organization: "{{ target_org_id }}"
+      project: "{{ target_project_id }}"
+      playbook: "{{ jt_detail.json.playbook }}"
+      job_type: "{{ jt_detail.json.job_type | default('run') }}"
+      become_enabled: "{{ jt_detail.json.become_enabled | default(false) }}"
+      diff_mode: "{{ jt_detail.json.diff_mode | default(false) }}"
+      allow_simultaneous: "{{ jt_detail.json.allow_simultaneous | default(false) }}"
+      ask_credential_on_launch: "{{ jt_detail.json.ask_credential_on_launch | default(false) }}"
+      ask_inventory_on_launch: "{{ jt_detail.json.ask_inventory_on_launch | default(false) }}"
+      ask_variables_on_launch: "{{ jt_detail.json.ask_variables_on_launch | default(false) }}"
+      ask_limit_on_launch: "{{ jt_detail.json.ask_limit_on_launch | default(false) }}"
+      ask_tags_on_launch: "{{ jt_detail.json.ask_tags_on_launch | default(false) }}"
+      ask_skip_tags_on_launch: "{{ jt_detail.json.ask_skip_tags_on_launch | default(false) }}"
+      ask_job_type_on_launch: "{{ jt_detail.json.ask_job_type_on_launch | default(false) }}"
+      ask_verbosity_on_launch: "{{ jt_detail.json.ask_verbosity_on_launch | default(false) }}"
+      ask_diff_mode_on_launch: "{{ jt_detail.json.ask_diff_mode_on_launch | default(false) }}"
+      job_tags: "{{ jt_detail.json.job_tags | default('') }}"
+      skip_tags: "{{ jt_detail.json.skip_tags | default('') }}"
+      limit: "{{ jt_detail.json.limit | default('') }}"
+      verbosity: "{{ jt_detail.json.verbosity | default(0) }}"
+      extra_vars: "{{ jt_detail.json.extra_vars | default('') }}"
+      inventory: >-
+        {{
+          (allow_only_localhost_inventory_mapping | bool)
+          | ternary(_mapped_inventory_id, omit)
+        }}
+      execution_environment: "{{ _ee_id | default(omit) }}"
+      survey_enabled: "{{ jt_detail.json.survey_enabled | default(false) }}"
+    return_content: true
+    status_code: [201]
+  register: created_jt
+  when:
+    - (tgt_jt_lookup.json.count | int) == 0
+    - (create_templates_without_missing_creds | bool) or ((_missing_cred_names | length) == 0)
+
+- name: Set target template id (created or existing)
+  ansible.builtin.set_fact:
+    _tgt_jt_id: >-
+      {{
+        ((tgt_jt_lookup.json.count | int) > 0)
+        | ternary(tgt_jt_lookup.json.results[0].id, created_jt.json.id)
+      }}
+  when:
+    - (create_templates_without_missing_creds | bool) or ((_missing_cred_names | length) == 0)
+
+- name: Update target job template (patch to keep it in sync)
+  ansible.builtin.uri:
+    url: "{{ controller_api_base }}/job_templates/{{ _tgt_jt_id }}/"
+    method: PATCH
+    headers: "{{ controller_headers }}"
+    validate_certs: "{{ controller_validate_certs }}"
+    body_format: json
+    body:
+      description: "{{ jt_detail.json.description | default('') }}"
+      project: "{{ target_project_id }}"
+      playbook: "{{ jt_detail.json.playbook }}"
+      job_type: "{{ jt_detail.json.job_type | default('run') }}"
+      become_enabled: "{{ jt_detail.json.become_enabled | default(false) }}"
+      diff_mode: "{{ jt_detail.json.diff_mode | default(false) }}"
+      allow_simultaneous: "{{ jt_detail.json.allow_simultaneous | default(false) }}"
+      ask_credential_on_launch: "{{ jt_detail.json.ask_credential_on_launch | default(false) }}"
+      ask_inventory_on_launch: "{{ jt_detail.json.ask_inventory_on_launch | default(false) }}"
+      ask_variables_on_launch: "{{ jt_detail.json.ask_variables_on_launch | default(false) }}"
+      ask_limit_on_launch: "{{ jt_detail.json.ask_limit_on_launch | default(false) }}"
+      ask_tags_on_launch: "{{ jt_detail.json.ask_tags_on_launch | default(false) }}"
+      ask_skip_tags_on_launch: "{{ jt_detail.json.ask_skip_tags_on_launch | default(false) }}"
+      ask_job_type_on_launch: "{{ jt_detail.json.ask_job_type_on_launch | default(false) }}"
+      ask_verbosity_on_launch: "{{ jt_detail.json.ask_verbosity_on_launch | default(false) }}"
+      ask_diff_mode_on_launch: "{{ jt_detail.json.ask_diff_mode_on_launch | default(false) }}"
+      job_tags: "{{ jt_detail.json.job_tags | default('') }}"
+      skip_tags: "{{ jt_detail.json.skip_tags | default('') }}"
+      limit: "{{ jt_detail.json.limit | default('') }}"
+      verbosity: "{{ jt_detail.json.verbosity | default(0) }}"
+      extra_vars: "{{ jt_detail.json.extra_vars | default('') }}"
+      inventory: >-
+        {{
+          (allow_only_localhost_inventory_mapping | bool)
+          | ternary(_mapped_inventory_id, omit)
+        }}
+      execution_environment: "{{ _ee_id | default(omit) }}"
+      survey_enabled: "{{ jt_detail.json.survey_enabled | default(false) }}"
+    status_code: [200]
+    return_content: true
+  when:
+    - _tgt_jt_id is defined
+
+# Attach credentials (only those that exist in target org)
+- name: Attach matched credentials to target template
+  ansible.builtin.uri:
+    url: "{{ controller_api_base }}/job_templates/{{ _tgt_jt_id }}/credentials/"
+    method: POST
+    headers: "{{ controller_headers }}"
+    validate_certs: "{{ controller_validate_certs }}"
+    body_format: json
+    body:
+      id: "{{ item }}"
+    status_code: [200, 201, 204]
+  loop: "{{ _matched_cred_ids }}"
+  loop_control:
+    label: "cred_id={{ item }}"
+  failed_when: false
+  when:
+    - _tgt_jt_id is defined
+    - (_missing_cred_names | length) == 0
+
+# Push survey spec (if enabled)
+- name: Push survey spec to target template (if enabled)
+  ansible.builtin.uri:
+    url: "{{ controller_api_base }}/job_templates/{{ _tgt_jt_id }}/survey_spec/"
+    method: POST
+    headers: "{{ controller_headers }}"
+    validate_certs: "{{ controller_validate_certs }}"
+    body_format: json
+    body: "{{ jt_survey.json }}"
+    status_code: [200, 201]
+  when:
+    - _tgt_jt_id is defined
+    - (jt_detail.json.survey_enabled | default(false) | bool)
+    - (jt_survey is defined)
+    - (jt_survey.json is defined)
 
 - name: Mark template copied
   ansible.builtin.set_fact:
     copied_templates: "{{ copied_templates + [jt_detail.json.name] }}"
+  when:
+    - _tgt_jt_id is defined
