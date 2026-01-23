@@ -31,9 +31,7 @@
     template_exclude: ""   # e.g. "Admin*"
 
     # ---------------------------------------------------------------------
-    # Controller connection (AWX OSS via extra vars)
-    # Expect these to come from the Job Template "Variables" / Survey:
-    #   tower_host, tower_oauth_token, tower_verify_ssl
+    # Controller connection (AWX OSS via extra vars / survey)
     # ---------------------------------------------------------------------
     controller_host: "{{ tower_host }}"
     controller_oauthtoken: "{{ tower_oauth_token }}"
@@ -59,18 +57,24 @@
           - target_org_name is defined and (target_org_name | length > 0)
         fail_msg: "source_org_name and target_org_name are required."
 
-    - name: Debug - show raw selection inputs
+    - name: Debug - show raw inputs
       ansible.builtin.debug:
         msg:
+          - "source_org_name='{{ source_org_name }}'"
+          - "target_org_name='{{ target_org_name }}'"
+          - "target_project_name='{{ target_project_name }}'"
+          - "target_localhost_inventory_name='{{ target_localhost_inventory_name }}'"
           - "copy_all_templates={{ copy_all_templates | bool }}"
           - "template_include='{{ template_include | default('') }}'"
           - "template_exclude='{{ template_exclude | default('') }}'"
           - "dry_run={{ dry_run | bool }}"
           - "debug_mode={{ debug_mode | bool }}"
+          - "allow_only_localhost_inventory_mapping={{ allow_only_localhost_inventory_mapping | bool }}"
+          - "create_templates_without_missing_creds={{ create_templates_without_missing_creds | bool }}"
       when: debug_mode | bool
 
     # ---------------------------------------------------------------------
-    # Lookups: org IDs (tower_api used for compatibility)
+    # Lookups: org IDs
     # ---------------------------------------------------------------------
     - name: Lookup source org
       awx.awx.tower_api:
@@ -152,14 +156,10 @@
           Target inventory '{{ target_localhost_inventory_name }}' not found in org '{{ target_org_name }}'.
           Run bootstrap first (or fix naming).
 
-    - name: Set target localhost inventory ID
-      ansible.builtin.set_fact:
-        target_localhost_inventory_id: "{{ dst_local_inv_rsp.json.results[0].id }}"
-
     # ---------------------------------------------------------------------
-    # Preload target org credentials (map name -> id)
+    # Preload target org credentials (name -> id map)
     # ---------------------------------------------------------------------
-    - name: Fetch all credentials in target org
+    - name: Fetch credentials in target org (page_size=200)
       awx.awx.tower_api:
         tower_host: "{{ controller_host }}"
         tower_oauthtoken: "{{ controller_oauthtoken }}"
@@ -169,8 +169,15 @@
         query_params:
           organization: "{{ target_org_id }}"
           page_size: 200
-        all_pages: true
       register: dst_creds_rsp
+
+    - name: Debug - warn if more than one page of creds exists
+      ansible.builtin.debug:
+        msg: "WARNING: credentials response indicates pagination (json.next not null). Increase page_size or implement paging."
+      when:
+        - debug_mode | bool
+        - dst_creds_rsp.json.next is defined
+        - dst_creds_rsp.json.next is not none
 
     - name: Build target credential name->id map
       ansible.builtin.set_fact:
@@ -184,9 +191,9 @@
           }}
 
     # ---------------------------------------------------------------------
-    # Fetch source org job templates
+    # Fetch source org job templates (page_size=200)
     # ---------------------------------------------------------------------
-    - name: Fetch all job templates in source org
+    - name: Fetch job templates in source org (page_size=200)
       awx.awx.tower_api:
         tower_host: "{{ controller_host }}"
         tower_oauthtoken: "{{ controller_oauthtoken }}"
@@ -196,17 +203,24 @@
         query_params:
           organization: "{{ source_org_id }}"
           page_size: 200
-        all_pages: true
       register: src_jt_rsp
+
+    - name: Debug - warn if more than one page of templates exists
+      ansible.builtin.debug:
+        msg: "WARNING: job_templates response indicates pagination (json.next not null). Increase page_size or implement paging."
+      when:
+        - debug_mode | bool
+        - src_jt_rsp.json.next is defined
+        - src_jt_rsp.json.next is not none
 
     - name: Build list of available source template names (for troubleshooting)
       ansible.builtin.set_fact:
         available_template_names: "{{ (src_jt_rsp.json.results | default([])) | map(attribute='name') | list }}"
 
     # ---------------------------------------------------------------------
-    # Selection logic (wildcard patterns, comma-separated)
+    # Selection logic (glob patterns -> regex)
     # ---------------------------------------------------------------------
-    - name: Parse include/exclude patterns
+    - name: Parse include/exclude patterns (comma-separated)
       ansible.builtin.set_fact:
         include_patterns: >-
           {{
@@ -225,14 +239,14 @@
             | list
           }}
 
-    - name: Convert wildcard patterns to regex lists
+    - name: Convert wildcard patterns to anchored regex lists
       ansible.builtin.set_fact:
         include_regexes: >-
           {{
             include_patterns
             | map('regex_escape')
-            | map('regex_replace', '\\\\\\*', '.*')
-            | map('regex_replace', '\\\\\\?', '.')
+            | map('regex_replace', '\\\\\*', '.*')
+            | map('regex_replace', '\\\\\?', '.')
             | map('regex_replace', '^(.*)$', '^\\1$')
             | list
           }}
@@ -240,50 +254,56 @@
           {{
             exclude_patterns
             | map('regex_escape')
-            | map('regex_replace', '\\\\\\*', '.*')
-            | map('regex_replace', '\\\\\\?', '.')
+            | map('regex_replace', '\\\\\*', '.*')
+            | map('regex_replace', '\\\\\?', '.')
             | map('regex_replace', '^(.*)$', '^\\1$')
             | list
           }}
 
-    - name: Select templates by patterns (or all)
+    - name: Build combined include/exclude regex strings
+      ansible.builtin.set_fact:
+        include_re: >-
+          {{
+            (copy_all_templates | bool)
+            | ternary(
+                '.*',
+                (((include_regexes | length) > 0) | ternary('(' ~ (include_regexes | join('|')) ~ ')', 'a^'))
+              )
+          }}
+        exclude_re: >-
+          {{
+            (((exclude_regexes | length) > 0) | ternary('(' ~ (exclude_regexes | join('|')) ~ ')', 'a^'))
+          }}
+
+    - name: Debug - show computed regex strings
+      ansible.builtin.debug:
+        msg:
+          - "include_patterns={{ include_patterns }}"
+          - "exclude_patterns={{ exclude_patterns }}"
+          - "include_re={{ include_re }}"
+          - "exclude_re={{ exclude_re }}"
+      when: debug_mode | bool
+
+    - name: Select templates (apply include then exclude)
       ansible.builtin.set_fact:
         selected_templates: >-
           {{
             (src_jt_rsp.json.results | default([]))
-            | selectattr(
-                'name',
-                'defined'
-              )
+            | selectattr('name', 'defined')
+            | selectattr('name', 'match', include_re)
+            | rejectattr('name', 'match', exclude_re)
             | list
           }}
 
-    - name: Apply include/exclude filters
-      ansible.builtin.set_fact:
-        selected_templates: >-
-          {{
-            selected_templates
-            | selectattr(
-                'name',
-                'match',
-                (copy_all_templates | bool) | ternary('.*', (include_regexes | length > 0) | ternary('(' ~ (include_regexes | join('|')) ~ ')', 'a^'))
-              )
-            | rejectattr(
-                'name',
-                'match',
-                (exclude_regexes | length > 0) | ternary('(' ~ (exclude_regexes | join('|')) ~ ')', 'a^')
-              )
-            | list
-          }}
-
-    - name: Debug - selection summary
+    - name: If selection empty, print first 50 available names (to help pick patterns)
       ansible.builtin.debug:
         msg:
-          - "Available templates in source org: {{ available_template_names | length }}"
-          - "Selected templates after filters: {{ selected_templates | length }}"
-          - "First 50 available names (if you need patterns):"
+          - "No templates matched selection."
+          - "You used: copy_all_templates={{ copy_all_templates | bool }}, include='{{ template_include }}', exclude='{{ template_exclude }}'"
+          - "TIP: Use include like 'AZ*,AVD*' (no spaces) to avoid dash/spacing issues."
+          - "First 50 available template names:"
           - "{{ available_template_names[:50] }}"
-      when: debug_mode | bool or (selected_templates | length) == 0
+      when: (selected_templates | length) == 0
 
     - name: Guard - selection not empty
       ansible.builtin.assert:
@@ -293,7 +313,6 @@
           No templates matched your selection.
           You used: copy_all_templates={{ copy_all_templates | bool }},
           include='{{ template_include }}', exclude='{{ template_exclude }}'.
-          TIP: Try include like 'AZ*,AVD*' (no spaces), or enable debug_mode to view template names.
 
     - name: Set selected template names (for reporting)
       ansible.builtin.set_fact:
@@ -322,7 +341,6 @@
     - name: Copy selected templates into target org (project/inventory pre-mapped)
       vars:
         src_template_id: "{{ src_jt.id }}"
-
       block:
         - name: Fetch template detail (full)
           awx.awx.tower_api:
@@ -358,6 +376,10 @@
                 | ternary(target_localhost_inventory_name, omit)
               }}
 
+        - name: Compute execution environment name (if any)
+          ansible.builtin.set_fact:
+            src_ee_name: "{{ jt_detail.json.summary_fields.execution_environment.name | default('') }}"
+
         - name: Log missing creds for this template (if any)
           ansible.builtin.set_fact:
             templates_missing_creds: "{{ templates_missing_creds | combine({ jt_detail.json.name: missing_cred_names }) }}"
@@ -368,7 +390,7 @@
             templates_inventory_not_mapped: "{{ templates_inventory_not_mapped + [jt_detail.json.name] }}"
           when:
             - allow_only_localhost_inventory_mapping | bool
-            - (src_inv_name | length > 0)
+            - (src_inv_name | length) > 0
             - (src_inv_name != source_localhost_inventory_name)
 
         - name: Create/Update job template in target org (survey copied)
@@ -389,8 +411,12 @@
                 | ternary(mapped_inventory_name, omit)
               }}
 
-            # Execution Environment (by name, if present)
-            execution_environment: "{{ jt_detail.json.summary_fields.execution_environment.name | default(omit) }}"
+            # Execution Environment (by name if present)
+            execution_environment: >-
+              {{
+                ((src_ee_name | length) > 0)
+                | ternary(src_ee_name, omit)
+              }}
 
             # Core settings
             job_type: "{{ jt_detail.json.job_type | default('run') }}"
@@ -418,7 +444,11 @@
 
             # Surveys
             survey_enabled: "{{ jt_detail.json.survey_enabled | default(false) }}"
-            survey_spec: "{{ (jt_detail.json.survey_enabled | default(false)) | bool | ternary(jt_survey.json, omit) }}"
+            survey_spec: >-
+              {{
+                (jt_detail.json.survey_enabled | default(false) | bool)
+                | ternary(jt_survey.json, omit)
+              }}
 
             # Credentials:
             # - If all creds exist -> attach
