@@ -1,407 +1,430 @@
 ---
-# Playbook-Admin/Copy Templates + Surveys (Bootstrap Aware).yml
-#
-# Uses ansible.controller collection (NOT awx.awx)
-# - Dry run lists what would be copied and exits cleanly
-# - Bootstrap aware: expects target org has project+inventory already
-# - Selection via include/exclude wildcards (comma-separated)
-# - Normalises dash spacing to avoid "AZ - *" matching issues
-
 - name: "AWX: Copy Job Templates + Surveys (Bootstrap-aware, with Dry Run)"
   hosts: localhost
   gather_facts: false
 
   vars:
-    # ---------------------------------------------------------------------
-    # Controller connection (passed via Job Template extra vars / survey)
-    # ---------------------------------------------------------------------
+    # ----------------------------
+    # Required controller vars (pass via JT extra vars or survey)
+    # ----------------------------
     tower_host: "{{ tower_host | default(omit) }}"
     tower_oauth_token: "{{ tower_oauth_token | default(omit) }}"
-    tower_verify_ssl: "{{ tower_verify_ssl | default(true) | bool }}"
+    tower_verify_ssl: "{{ tower_verify_ssl | default(true) }}"
 
-    # ---------------------------------------------------------------------
-    # Orgs
-    # ---------------------------------------------------------------------
+    # ----------------------------
+    # Required org vars
+    # ----------------------------
     source_org_name: "{{ source_org_name | default(omit) }}"
     target_org_name: "{{ target_org_name | default(omit) }}"
 
-    # ---------------------------------------------------------------------
-    # Bootstrap-aware defaults: use target org name for project+inventory
-    # ---------------------------------------------------------------------
+    # ----------------------------
+    # Bootstrap-aware mapping defaults
+    # (you asked: project name = target_org_name like inventory)
+    # ----------------------------
     target_project_name: "{{ target_project_name | default(target_org_name) }}"
     target_inventory_name: "{{ target_inventory_name | default(target_org_name) }}"
+    target_localhost_name: "{{ target_localhost_name | default('localhost') }}"
 
-    # ---------------------------------------------------------------------
-    # Selection
-    # ---------------------------------------------------------------------
-    dry_run: "{{ dry_run | default(true) | bool }}"
-    copy_all_templates: "{{ copy_all_templates | default(false) | bool }}"
-    template_include: "{{ template_include | default('') }}"
-    template_exclude: "{{ template_exclude | default('') }}"
+    # Source inventory name we allow mapping from (master org)
+    source_localhost_inventory_name: "{{ source_localhost_inventory_name | default('Localhost') }}"
 
-    # ---------------------------------------------------------------------
-    # Mapping / behaviour toggles
-    # ---------------------------------------------------------------------
-    allow_only_localhost_inventory_mapping: "{{ allow_only_localhost_inventory_mapping | default(true) | bool }}"
-    create_templates_without_missing_creds: "{{ create_templates_without_missing_creds | default(true) | bool }}"
+    # ----------------------------
+    # Selection controls
+    # ----------------------------
+    copy_all_templates: "{{ (copy_all_templates | default(false)) | bool }}"
+    template_include: "{{ template_include | default('') }}"   # e.g. "AZ*,AVD*"
+    template_exclude: "{{ template_exclude | default('') }}"   # e.g. "Admin*"
+
+    # ----------------------------
+    # Behaviour toggles
+    # ----------------------------
+    dry_run: "{{ (dry_run | default(false)) | bool }}"
+
+    # If true, create the template even if some credential names don't exist in target org.
+    # We'll omit creds and log which are missing.
+    create_templates_without_missing_creds: "{{ (create_templates_without_missing_creds | default(true)) | bool }}"
+
+    # If true, ONLY allow mapping templates whose source inventory is "Localhost".
+    # If a template uses a different inventory, we skip it (and log).
+    allow_only_localhost_inventory_mapping: "{{ (allow_only_localhost_inventory_mapping | default(true)) | bool }}"
+
+    # Debug verbosity switch
+    debug_selection: "{{ (debug_selection | default(true)) | bool }}"
 
   tasks:
-    # ---------------------------------------------------------------------
+    # -------------------------------------------------------------------
     # Guards
-    # ---------------------------------------------------------------------
-    - name: Show installed collections in EE
-      ansible.builtin.command: ansible-galaxy collection list
-      register: galaxy_list
-      changed_when: false
-
-    - name: Print collections list
-      ansible.builtin.debug:
-        var: galaxy_list.stdout_lines
-        
-    - name: Guard - controller vars present
+    # -------------------------------------------------------------------
+    - name: "Guard - controller vars present"
       ansible.builtin.assert:
         that:
           - tower_host is defined
           - tower_oauth_token is defined
-        fail_msg: "Controller connection not configured. Provide tower_host and tower_oauth_token via survey/extra vars."
+        fail_msg: "Provide tower_host and tower_oauth_token (and optionally tower_verify_ssl)."
 
-    - name: Guard - org vars present
+    - name: "Guard - org vars present"
       ansible.builtin.assert:
         that:
           - source_org_name is defined
           - target_org_name is defined
         fail_msg: "Provide source_org_name and target_org_name."
 
-    # ---------------------------------------------------------------------
+    # -------------------------------------------------------------------
     # Lookup orgs
-    # ---------------------------------------------------------------------
-    - name: Lookup source org
-      ansible.controller.organization_info:
-        controller_host: "{{ tower_host }}"
-        controller_oauthtoken: "{{ tower_oauth_token }}"
+    # -------------------------------------------------------------------
+    - name: "Lookup source org"
+      awx.awx.tower_organization_info:
+        tower_host: "{{ tower_host }}"
+        tower_oauth_token: "{{ tower_oauth_token }}"
         validate_certs: "{{ tower_verify_ssl }}"
         name: "{{ source_org_name }}"
       register: src_org_rsp
 
-    - name: Lookup target org
-      ansible.controller.organization_info:
-        controller_host: "{{ tower_host }}"
-        controller_oauthtoken: "{{ tower_oauth_token }}"
+    - name: "Lookup target org"
+      awx.awx.tower_organization_info:
+        tower_host: "{{ tower_host }}"
+        tower_oauth_token: "{{ tower_oauth_token }}"
         validate_certs: "{{ tower_verify_ssl }}"
         name: "{{ target_org_name }}"
       register: tgt_org_rsp
 
-    - name: Guard - org lookups returned exactly one result each
+    - name: "Guard - org lookups returned exactly one result each"
       ansible.builtin.assert:
         that:
           - (src_org_rsp.organizations | length) == 1
           - (tgt_org_rsp.organizations | length) == 1
         fail_msg: "Expected exactly 1 result for source and target org. Check names / duplicates."
 
-    - name: Set org IDs
+    - name: "Set org ids"
       ansible.builtin.set_fact:
         src_org_id: "{{ src_org_rsp.organizations[0].id }}"
         tgt_org_id: "{{ tgt_org_rsp.organizations[0].id }}"
 
-    # ---------------------------------------------------------------------
-    # Lookup bootstrap-created project + inventory in target org
-    # ---------------------------------------------------------------------
-    - name: Lookup target project (bootstrap-created)
-      ansible.controller.project_info:
-        controller_host: "{{ tower_host }}"
-        controller_oauthtoken: "{{ tower_oauth_token }}"
+    # -------------------------------------------------------------------
+    # Ensure target project exists (bootstrap should have created it)
+    # -------------------------------------------------------------------
+    - name: "Lookup target project"
+      awx.awx.tower_project_info:
+        tower_host: "{{ tower_host }}"
+        tower_oauth_token: "{{ tower_oauth_token }}"
         validate_certs: "{{ tower_verify_ssl }}"
+        organization: "{{ tgt_org_id }}"
         name: "{{ target_project_name }}"
-        organization: "{{ target_org_name }}"
       register: tgt_proj_rsp
 
-    - name: Guard - target project exists (bootstrap must have created it)
+    - name: "Guard - target project exists"
       ansible.builtin.assert:
         that:
           - (tgt_proj_rsp.projects | length) == 1
-        fail_msg: "Target project '{{ target_project_name }}' not found in org '{{ target_org_name }}'. Run bootstrap first."
+        fail_msg: "Target project '{{ target_project_name }}' not found in org '{{ target_org_name }}'. Run bootstrap first (or fix names)."
 
-    - name: Lookup target inventory (bootstrap-created)
-      ansible.controller.inventory_info:
-        controller_host: "{{ tower_host }}"
-        controller_oauthtoken: "{{ tower_oauth_token }}"
+    - name: "Set target project id"
+      ansible.builtin.set_fact:
+        tgt_project_id: "{{ tgt_proj_rsp.projects[0].id }}"
+
+    # -------------------------------------------------------------------
+    # Ensure target inventory exists (bootstrap should have created it)
+    # -------------------------------------------------------------------
+    - name: "Lookup target inventory"
+      awx.awx.tower_inventory_info:
+        tower_host: "{{ tower_host }}"
+        tower_oauth_token: "{{ tower_oauth_token }}"
         validate_certs: "{{ tower_verify_ssl }}"
+        organization: "{{ tgt_org_id }}"
         name: "{{ target_inventory_name }}"
-        organization: "{{ target_org_name }}"
       register: tgt_inv_rsp
 
-    - name: Guard - target inventory exists (bootstrap must have created it)
+    - name: "Guard - target inventory exists"
       ansible.builtin.assert:
         that:
           - (tgt_inv_rsp.inventories | length) == 1
-        fail_msg: "Target inventory '{{ target_inventory_name }}' not found in org '{{ target_org_name }}'. Run bootstrap first."
+        fail_msg: "Target inventory '{{ target_inventory_name }}' not found in org '{{ target_org_name }}'. Run bootstrap first (or fix names)."
 
-    - name: Set target project/inventory IDs
+    - name: "Set target inventory id"
       ansible.builtin.set_fact:
-        tgt_project_id: "{{ tgt_proj_rsp.projects[0].id }}"
         tgt_inventory_id: "{{ tgt_inv_rsp.inventories[0].id }}"
 
-    # ---------------------------------------------------------------------
-    # Fetch source templates
-    # ---------------------------------------------------------------------
-    - name: Fetch all job templates (controller-wide)
-      ansible.controller.job_template_info:
-        controller_host: "{{ tower_host }}"
-        controller_oauthtoken: "{{ tower_oauth_token }}"
+    # -------------------------------------------------------------------
+    # Pull all source job templates
+    # -------------------------------------------------------------------
+    - name: "Get source job templates"
+      awx.awx.tower_job_template_info:
+        tower_host: "{{ tower_host }}"
+        tower_oauth_token: "{{ tower_oauth_token }}"
         validate_certs: "{{ tower_verify_ssl }}"
-      register: all_jt_rsp
+        organization: "{{ src_org_id }}"
+      register: src_jt_rsp
 
-    - name: Filter job templates to source org only
+    - name: "Build list of available source template names (for troubleshooting)"
       ansible.builtin.set_fact:
-        src_jt_list: >-
-          {{
-            (all_jt_rsp.job_templates | default([]))
-            | selectattr('summary_fields.organization.id', 'defined')
-            | selectattr('summary_fields.organization.id', 'equalto', src_org_id)
-            | list
-          }}
+        src_template_names: "{{ src_jt_rsp.job_templates | map(attribute='name') | list }}"
 
-    - name: Build list of available source template names (for troubleshooting)
+    # -------------------------------------------------------------------
+    # Pattern parsing (comma-separated globs -> list)
+    # -------------------------------------------------------------------
+    - name: "Parse include/exclude globs into lists"
       ansible.builtin.set_fact:
-        available_template_names: "{{ src_jt_list | map(attribute='name') | list }}"
+        include_globs: >-
+          {{
+            (template_include | default('') | trim)
+            | ternary(
+                (template_include | split(',') | map('trim') | reject('equalto','') | list),
+                []
+              )
+          }}
+        exclude_globs: >-
+          {{
+            (template_exclude | default('') | trim)
+            | ternary(
+                (template_exclude | split(',') | map('trim') | reject('equalto','') | list),
+                []
+              )
+          }}
 
-    # ---------------------------------------------------------------------
-    # Selection logic (include/exclude)
-    # ---------------------------------------------------------------------
-    - name: Parse include/exclude lists into arrays
+    # Convert simple glob patterns into regex strings
+    # glob: AZ*  -> regex: ^AZ.*$
+    # glob: Admin* -> ^Admin.*$
+    - name: "Convert glob lists to regex lists"
       ansible.builtin.set_fact:
-        template_include_list: >-
-          {{
-            (template_include | default('') | string)
-            | split(',')
-            | map('trim')
-            | reject('equalto','')
-            | list
-          }}
-        template_exclude_list: >-
-          {{
-            (template_exclude | default('') | string)
-            | split(',')
-            | map('trim')
-            | reject('equalto','')
-            | list
-          }}
+        include_regexes: "{{ include_regexes | default([]) + [ ('^' ~ (item | regex_escape | regex_replace('\\\\\\*','.*') | regex_replace('\\\\\\?','.') ) ~ '$') ] }}"
+      loop: "{{ include_globs }}"
 
-    - name: Normalise include/exclude patterns and build combined regex strings
-      vars:
-        include_norm: >-
-          {{
-            template_include_list
-            | map('regex_replace', '\\s*[–—-]\\s*', ' - ')
-            | map('regex_replace', '\\s+', ' ')
-            | map('trim')
-            | list
-          }}
-        exclude_norm: >-
-          {{
-            template_exclude_list
-            | map('regex_replace', '\\s*[–—-]\\s*', ' - ')
-            | map('regex_replace', '\\s+', ' ')
-            | map('trim')
-            | list
-          }}
-        include_regexes_calc: >-
-          {{
-            include_norm
-            | map('regex_escape')
-            | map('regex_replace', '\\\\*', '.*')
-            | map('regex_replace', '^', '^')
-            | map('regex_replace', '$', '$')
-            | list
-          }}
-        exclude_regexes_calc: >-
-          {{
-            exclude_norm
-            | map('regex_escape')
-            | map('regex_replace', '\\\\*', '.*')
-            | map('regex_replace', '^', '^')
-            | map('regex_replace', '$', '$')
-            | list
-          }}
-        include_combined_calc: >-
-          {{
-            ((include_regexes_calc | length) > 0)
-            | ternary('(?:' ~ (include_regexes_calc | join('|')) ~ ')', '')
-          }}
-        exclude_combined_calc: >-
-          {{
-            ((exclude_regexes_calc | length) > 0)
-            | ternary('(?:' ~ (exclude_regexes_calc | join('|')) ~ ')', '')
-          }}
+    - name: "Convert exclude glob lists to regex lists"
       ansible.builtin.set_fact:
-        include_regexes: "{{ include_regexes_calc }}"
-        exclude_regexes: "{{ exclude_regexes_calc }}"
-        include_combined: "{{ include_combined_calc }}"
-        exclude_combined: "{{ exclude_combined_calc }}"
+        exclude_regexes: "{{ exclude_regexes | default([]) + [ ('^' ~ (item | regex_escape | regex_replace('\\\\\\*','.*') | regex_replace('\\\\\\?','.') ) ~ '$') ] }}"
+      loop: "{{ exclude_globs }}"
 
-    - name: Debug include/exclude combined regex
+    - name: "Build combined regex strings"
+      ansible.builtin.set_fact:
+        include_combined_regex: "{{ (include_regexes | default([]) | length > 0) | ternary('(' ~ (include_regexes | join('|')) ~ ')', '') }}"
+        exclude_combined_regex: "{{ (exclude_regexes | default([]) | length > 0) | ternary('(' ~ (exclude_regexes | join('|')) ~ ')', '') }}"
+
+    - name: "Debug - selection inputs"
       ansible.builtin.debug:
         msg:
-          - "include (raw)='{{ template_include }}' -> include_regexes={{ include_regexes }}"
-          - "exclude (raw)='{{ template_exclude }}' -> exclude_regexes={{ exclude_regexes }}"
-          - "include_combined={{ include_combined }}"
-          - "exclude_combined={{ exclude_combined }}"
+          - "copy_all_templates={{ copy_all_templates }}"
+          - "include_globs={{ include_globs }}"
+          - "exclude_globs={{ exclude_globs }}"
+          - "include_combined_regex={{ include_combined_regex }}"
+          - "exclude_combined_regex={{ exclude_combined_regex }}"
+      when: debug_selection | bool
 
-    - name: Select job templates from source list according to include/exclude rules
-      vars:
-        name_norm: >-
-          {{
-            (item.name | string)
-            | regex_replace('\\s*[–—-]\\s*', ' - ')
-            | regex_replace('\\s+', ' ')
-            | trim
-          }}
-        include_hit: >-
-          {{
-            (copy_all_templates | bool)
-            or
-            (
-              (include_combined | length) > 0
-              and
-              (name_norm is match(include_combined))
-            )
-          }}
-        exclude_hit: >-
-          {{
-            (exclude_combined | length) > 0
-            and
-            (name_norm is match(exclude_combined))
-          }}
+    # -------------------------------------------------------------------
+    # Select templates
+    # Rules:
+    # - If copy_all_templates=true -> everything except excludes
+    # - Else -> must match include AND not match exclude
+    # -------------------------------------------------------------------
+    - name: "Select templates by include/exclude"
       ansible.builtin.set_fact:
-        selected_jt_raw: "{{ (selected_jt_raw | default([])) + ([item] if (include_hit and not exclude_hit) else []) }}"
-      loop: "{{ src_jt_list }}"
-
-    - name: Set selected template names (for reporting)
+        selected_templates: >-
+          {{
+            src_jt_rsp.job_templates
+            | rejectattr('name','match', exclude_combined_regex) if (exclude_combined_regex | length > 0) else src_jt_rsp.job_templates
+          }}
+    - name: "Apply include filter (if not copy_all_templates)"
       ansible.builtin.set_fact:
-        selected_template_names: "{{ (selected_jt_raw | default([])) | map(attribute='name') | list }}"
+        selected_templates: >-
+          {{
+            (selected_templates | selectattr('name','match', include_combined_regex) | list)
+            if (not copy_all_templates and (include_combined_regex | length > 0))
+            else (selected_templates | list)
+          }}
 
-    - name: Print selection summary
-      ansible.builtin.debug:
-        msg:
-          - "Selection summary:"
-          - "copy_all_templates={{ copy_all_templates }}, dry_run={{ dry_run }}"
-          - "include='{{ template_include | default('') }}'"
-          - "exclude='{{ template_exclude | default('') }}'"
-          - "Selected {{ selected_template_names | length }} template(s):"
-          - "{{ selected_template_names }}"
+    - name: "Set selected template names (for reporting)"
+      ansible.builtin.set_fact:
+        selected_template_names: "{{ selected_templates | map(attribute='name') | list }}"
 
-    - name: If selection is empty, print first 50 available template names (to help pick patterns)
+    # If selection is empty, print top 50 available names to help adjust patterns
+    - name: "If selection is empty, print first 50 available template names (to help pick patterns)"
       ansible.builtin.debug:
         msg:
           - "No templates matched selection."
-          - "You used: copy_all_templates={{ copy_all_templates }}, include='{{ template_include | default('') }}', exclude='{{ template_exclude | default('') }}'"
+          - "You used: copy_all_templates={{ copy_all_templates }}, include='{{ template_include }}', exclude='{{ template_exclude }}'"
+          - "TIP: Best is include 'AZ*,AVD*' (no dash/space) OR include 'AZ -*,AVD -*' if your names include that exact formatting."
           - "First 50 available template names:"
-          - "{{ available_template_names[:50] }}"
-      when: (selected_jt_raw | default([]) | length) == 0
+          - "{{ (src_template_names | sort)[:50] }}"
+      when: (selected_templates | length) == 0
 
-    - name: If dry_run and selection is empty, stop cleanly (no failure)
-      ansible.builtin.meta: end_play
-      when:
-        - dry_run
-        - (selected_jt_raw | default([]) | length) == 0
-
-    - name: Guard - selection not empty (only fails when not dry_run)
+    - name: "Guard - selection not empty"
       ansible.builtin.assert:
         that:
-          - (selected_jt_raw | length) > 0
-        fail_msg: >
-          No templates matched your selection.
-          copy_all_templates={{ copy_all_templates }},
-          include='{{ template_include | default('') }}',
-          exclude='{{ template_exclude | default('') }}'.
-      when: not dry_run
+          - (selected_templates | length) > 0
+        fail_msg: "No templates matched your selection. Adjust include/exclude globs and rerun."
 
-    # ---------------------------------------------------------------------
-    # Inventory mapping check (optional strictness)
-    # ---------------------------------------------------------------------
-    - name: Build copy plan (and apply localhost-only inventory rule if enabled)
-      vars:
-        src_inventory_name: "{{ (item.summary_fields.inventory.name | default('')) }}"
-        inventory_ok: >-
-          {{
-            (not allow_only_localhost_inventory_mapping)
-            or
-            (src_inventory_name == 'Localhost')
-          }}
-      ansible.builtin.set_fact:
-        copy_plan: "{{ (copy_plan | default([])) + ([item] if inventory_ok else []) }}"
-        skipped_due_to_inventory: "{{ (skipped_due_to_inventory | default([])) + ([item.name] if (not inventory_ok) else []) }}"
-      loop: "{{ selected_jt_raw }}"
-
-    - name: Report inventory-mapping skips (if any)
+    - name: "Dry run report - list templates to copy"
       ansible.builtin.debug:
         msg:
-          - "Skipped due to inventory mapping rule (allow_only_localhost_inventory_mapping=True):"
-          - "{{ skipped_due_to_inventory }}"
-      when: (skipped_due_to_inventory | default([]) | length) > 0
+          - "DRY RUN={{ dry_run }}"
+          - "Source org='{{ source_org_name }}' -> Target org='{{ target_org_name }}'"
+          - "Target project='{{ target_project_name }}' (id={{ tgt_project_id }})"
+          - "Target inventory='{{ target_inventory_name }}' (id={{ tgt_inventory_id }})"
+          - "Templates selected ({{ selected_template_names | length }}):"
+          - "{{ selected_template_names }}"
+      when: dry_run | bool
 
-    - name: If dry_run, print final plan and exit cleanly
-      ansible.builtin.debug:
-        msg:
-          - "DRY RUN: Would copy {{ (copy_plan | default([]) | length) }} template(s) into org '{{ target_org_name }}'"
-          - "Target project='{{ target_project_name }}' inventory='{{ target_inventory_name }}'"
-          - "{{ (copy_plan | default([])) | map(attribute='name') | list }}"
-      when: dry_run
-
-    - name: End play (dry_run)
+    - name: "Stop here if dry run"
       ansible.builtin.meta: end_play
-      when: dry_run
+      when: dry_run | bool
 
-    # ---------------------------------------------------------------------
-    # Copy templates (real run)
-    # ---------------------------------------------------------------------
-    - name: Copy job templates into target org (bootstrap-aware)
+    # -------------------------------------------------------------------
+    # Copy loop
+    # -------------------------------------------------------------------
+    - name: "Copy selected templates (surveys + prompts), bootstrap-aware mapping"
       vars:
         src_name: "{{ item.name }}"
-      ansible.controller.job_template:
-        controller_host: "{{ tower_host }}"
-        controller_oauthtoken: "{{ tower_oauth_token }}"
-        validate_certs: "{{ tower_verify_ssl }}"
+        src_id: "{{ item.id }}"
+      loop: "{{ selected_templates }}"
+      loop_control:
+        label: "{{ item.name }}"
+      block:
 
-        name: "{{ src_name }}"
-        description: "{{ item.description | default('') }}"
-        organization: "{{ target_org_name }}"
+        # Pull full JT detail for this template (includes playbook, survey, credentials, etc.)
+        - name: "Get full source template detail"
+          awx.awx.tower_job_template_info:
+            tower_host: "{{ tower_host }}"
+            tower_oauth_token: "{{ tower_oauth_token }}"
+            validate_certs: "{{ tower_verify_ssl }}"
+            organization: "{{ src_org_id }}"
+            name: "{{ src_name }}"
+          register: src_jt_detail
 
-        project: "{{ target_project_name }}"
-        inventory: "{{ target_inventory_name }}"
-        playbook: "{{ item.playbook | default(omit) }}"
-        job_type: "{{ item.job_type | default(omit) }}"
+        - name: "Guard - source template lookup returned exactly one"
+          ansible.builtin.assert:
+            that:
+              - (src_jt_detail.job_templates | length) == 1
+            fail_msg: "Unexpected: template '{{ src_name }}' not found uniquely in source org."
 
-        execution_environment: "{{ item.execution_environment | default(omit) }}"
-        verbosity: "{{ item.verbosity | default(omit) }}"
-        forks: "{{ item.forks | default(omit) }}"
-        timeout: "{{ item.timeout | default(omit) }}"
+        - name: "Set source template object"
+          ansible.builtin.set_fact:
+            jt: "{{ src_jt_detail.job_templates[0] }}"
 
-        ask_inventory_on_launch: "{{ item.ask_inventory_on_launch | default(false) }}"
-        ask_variables_on_launch: "{{ item.ask_variables_on_launch | default(false) }}"
-        ask_limit_on_launch: "{{ item.ask_limit_on_launch | default(false) }}"
-        ask_tags_on_launch: "{{ item.ask_tags_on_launch | default(false) }}"
-        ask_skip_tags_on_launch: "{{ item.ask_skip_tags_on_launch | default(false) }}"
-        ask_job_type_on_launch: "{{ item.ask_job_type_on_launch | default(false) }}"
-        ask_verbosity_on_launch: "{{ item.ask_verbosity_on_launch | default(false) }}"
-        ask_execution_environment_on_launch: "{{ item.ask_execution_environment_on_launch | default(false) }}"
-        ask_forks_on_launch: "{{ item.ask_forks_on_launch | default(false) }}"
-        ask_timeout_on_launch: "{{ item.ask_timeout_on_launch | default(false) }}"
-        ask_diff_mode_on_launch: "{{ item.ask_diff_mode_on_launch | default(false) }}"
+        # Inventory mapping checks:
+        - name: "Skip if template uses non-localhost inventory (when restricted)"
+          ansible.builtin.debug:
+            msg: "Skipping '{{ jt.name }}' because it uses inventory '{{ jt.inventory.name | default('None') }}' (only '{{ source_localhost_inventory_name }}' allowed)."
+          when:
+            - allow_only_localhost_inventory_mapping | bool
+            - jt.inventory is defined
+            - jt.inventory.name is defined
+            - jt.inventory.name != source_localhost_inventory_name
 
-        extra_vars: "{{ item.extra_vars | default(omit) }}"
+        - name: "End this item if inventory mapping is not allowed"
+          ansible.builtin.meta: end_host
+          when:
+            - allow_only_localhost_inventory_mapping | bool
+            - jt.inventory is defined
+            - jt.inventory.name is defined
+            - jt.inventory.name != source_localhost_inventory_name
 
-        survey_enabled: "{{ item.survey_enabled | default(false) }}"
-        survey_spec: "{{ item.survey_spec | default(omit) }}"
+        # Credential mapping (by name) - optional/soft
+        - name: "Extract source credential names"
+          ansible.builtin.set_fact:
+            src_cred_names: "{{ (jt.credentials | default([])) | map(attribute='name') | list }}"
 
-        state: present
-      loop: "{{ copy_plan | default([]) }}"
-      register: copy_results
+        - name: "Lookup creds in target org by name"
+          awx.awx.tower_credential_info:
+            tower_host: "{{ tower_host }}"
+            tower_oauth_token: "{{ tower_oauth_token }}"
+            validate_certs: "{{ tower_verify_ssl }}"
+            organization: "{{ tgt_org_id }}"
+            name: "{{ item }}"
+          loop: "{{ src_cred_names }}"
+          register: tgt_cred_lookups
+          changed_when: false
 
-    - name: Copy complete summary
-      ansible.builtin.debug:
-        msg:
-          - "Copied/updated {{ (copy_plan | default([]) | length) }} templates into org '{{ target_org_name }}'."
-          - "Target project='{{ target_project_name }}' inventory='{{ target_inventory_name }}'"
-          - "Templates:"
-          - "{{ (copy_plan | default([])) | map(attribute='name') | list }}"
+        - name: "Build credential id list + missing list"
+          ansible.builtin.set_fact:
+            tgt_cred_ids: >-
+              {{
+                (tgt_cred_lookups.results
+                  | map(attribute='credentials')
+                  | map('first')
+                  | select('defined')
+                  | map(attribute='id')
+                  | list)
+              }}
+            missing_cred_names: >-
+              {{
+                tgt_cred_lookups.results
+                | selectattr('credentials','defined')
+                | selectattr('credentials','equalto',[])
+                | map(attribute='item')
+                | list
+              }}
+
+        - name: "Log missing creds (soft mode)"
+          ansible.builtin.debug:
+            msg: "Template '{{ jt.name }}' is missing creds in target org: {{ missing_cred_names }}"
+          when:
+            - (missing_cred_names | length) > 0
+            - create_templates_without_missing_creds | bool
+
+        - name: "Fail if missing creds (strict mode)"
+          ansible.builtin.fail:
+            msg: "Template '{{ jt.name }}' requires creds missing in target org: {{ missing_cred_names }}"
+          when:
+            - (missing_cred_names | length) > 0
+            - not (create_templates_without_missing_creds | bool)
+
+        - name: "Decide final credential ids to attach"
+          ansible.builtin.set_fact:
+            final_cred_ids: "{{ (create_templates_without_missing_creds | bool) | ternary(tgt_cred_ids, tgt_cred_ids) }}"
+            # Note: in soft mode, tgt_cred_ids already excludes missing (because lookup returned none)
+
+        # Create/update the JT in target
+        - name: "Create/update job template in target (copy survey + prompts)"
+          awx.awx.tower_job_template:
+            tower_host: "{{ tower_host }}"
+            tower_oauth_token: "{{ tower_oauth_token }}"
+            validate_certs: "{{ tower_verify_ssl }}"
+
+            organization: "{{ tgt_org_id }}"
+            name: "{{ jt.name }}"
+            description: "{{ jt.description | default('') }}"
+
+            job_type: "{{ jt.job_type }}"
+            project: "{{ tgt_project_id }}"
+            playbook: "{{ jt.playbook }}"
+            inventory: "{{ tgt_inventory_id }}"
+
+            # EE (if your JTs use it)
+            execution_environment: "{{ jt.execution_environment.name | default(omit) }}"
+
+            # Prompts / ask-on-launch flags
+            ask_variables_on_launch: "{{ jt.ask_variables_on_launch | default(false) }}"
+            ask_inventory_on_launch: "{{ jt.ask_inventory_on_launch | default(false) }}"
+            ask_limit_on_launch: "{{ jt.ask_limit_on_launch | default(false) }}"
+            ask_scm_branch_on_launch: "{{ jt.ask_scm_branch_on_launch | default(false) }}"
+            ask_verbosity_on_launch: "{{ jt.ask_verbosity_on_launch | default(false) }}"
+            ask_tags_on_launch: "{{ jt.ask_tags_on_launch | default(false) }}"
+            ask_skip_tags_on_launch: "{{ jt.ask_skip_tags_on_launch | default(false) }}"
+            ask_job_type_on_launch: "{{ jt.ask_job_type_on_launch | default(false) }}"
+            ask_diff_mode_on_launch: "{{ jt.ask_diff_mode_on_launch | default(false) }}"
+
+            # Keep common runtime settings (safe subset)
+            forks: "{{ jt.forks | default(omit) }}"
+            timeout: "{{ jt.timeout | default(omit) }}"
+            verbosity: "{{ jt.verbosity | default(omit) }}"
+            job_slice_count: "{{ jt.job_slice_count | default(omit) }}"
+
+            # Extra vars / defaults (copied as-is)
+            extra_vars: "{{ jt.extra_vars | default(omit) }}"
+
+            # Credentials (optional)
+            credentials: "{{ (final_cred_ids | length > 0) | ternary(final_cred_ids, omit) }}"
+
+            # Survey copy
+            survey_enabled: "{{ jt.survey_enabled | default(false) }}"
+            survey_spec: "{{ jt.survey_spec | default(omit) }}"
+
+            state: present
+          register: create_jt
+
+        - name: "Report result"
+          ansible.builtin.debug:
+            msg:
+              - "Created/updated '{{ jt.name }}' in org '{{ target_org_name }}'"
+              - "Attached creds={{ final_cred_ids | default([]) }}"
+              - "Missing creds={{ missing_cred_names | default([]) }}"
+              - "Changed={{ create_jt.changed }}"
