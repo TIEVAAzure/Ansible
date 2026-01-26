@@ -98,7 +98,20 @@
         fail_msg: >
           You must provide source_org_name and target_org_name (Survey / extra vars).
 
-    - name: Debug - show resolved controller inputs
+- name: Resolve bootstrap-aligned defaults (project + localhost inventory)
+  ansible.builtin.set_fact:
+    target_project_name: >-
+      {{
+        (target_project_name_input | string | trim | length > 0)
+        | ternary(target_project_name_input | string | trim, target_org_name)
+      }}
+    target_localhost_inventory_name: >-
+      {{
+        (target_localhost_inventory_name_input | string | trim | length > 0)
+        | ternary(target_localhost_inventory_name_input | string | trim, (target_org_name ~ ' - Localhost'))
+      }}
+
+- name: Debug - show resolved controller inputs
       ansible.builtin.debug:
         msg:
           - "awx_api_base={{ awx_api_base }}"
@@ -117,7 +130,7 @@
     # ------------------------------------------------------------------------
     # Lookups: org IDs
     # ------------------------------------------------------------------------
-    - name: Lookup source org
+- name: Lookup source org
       ansible.builtin.uri:
         url: "{{ awx_api_base }}/organizations/?name={{ source_org_name | urlencode }}"
         method: GET
@@ -152,7 +165,7 @@
     # ------------------------------------------------------------------------
     # Lookups: target project (bootstrap created it with name == target_org_name)
     # ------------------------------------------------------------------------
-    - name: Lookup target project by org + name
+- name: Lookup target project by org + name
       ansible.builtin.uri:
         url: "{{ awx_api_base }}/projects/?organization={{ target_org_id }}&name={{ target_project_name | urlencode }}"
         method: GET
@@ -176,7 +189,7 @@
     # ------------------------------------------------------------------------
     # Lookups: target localhost inventory (bootstrap created it)
     # ------------------------------------------------------------------------
-    - name: Lookup target localhost inventory by org + name
+- name: Lookup target localhost inventory by org + name
       ansible.builtin.uri:
         url: "{{ awx_api_base }}/inventories/?organization={{ target_org_id }}&name={{ target_localhost_inventory_name | urlencode }}"
         method: GET
@@ -200,7 +213,7 @@
     # ------------------------------------------------------------------------
     # Preload target org credentials (map name -> id)
     # ------------------------------------------------------------------------
-    - name: Fetch credentials in target org
+- name: Fetch credentials in target org
       ansible.builtin.uri:
         url: "{{ awx_api_base }}/credentials/?organization={{ target_org_id }}&page_size={{ page_size }}"
         method: GET
@@ -231,7 +244,7 @@
     # ------------------------------------------------------------------------
     # Fetch source org job templates
     # ------------------------------------------------------------------------
-    - name: Fetch job templates in source org
+- name: Fetch job templates in source org
       ansible.builtin.uri:
         url: "{{ awx_api_base }}/job_templates/?organization={{ source_org_id }}&page_size={{ page_size }}"
         method: GET
@@ -251,7 +264,7 @@
     # ------------------------------------------------------------------------
     # Selection logic
     # ------------------------------------------------------------------------
-    - name: Parse include/exclude patterns (comma-separated)
+- name: Parse include/exclude patterns (comma-separated)
       ansible.builtin.set_fact:
         include_patterns: >-
           {{
@@ -330,7 +343,7 @@
     # ------------------------------------------------------------------------
     # Fetch details + survey specs, then loop include_tasks (legal pattern)
     # ------------------------------------------------------------------------
-    - name: Fetch full detail for each selected template
+- name: Fetch full detail for each selected template
       ansible.builtin.uri:
         url: "{{ awx_api_base }}/job_templates/{{ item.id }}/"
         method: GET
