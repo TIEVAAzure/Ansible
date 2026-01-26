@@ -282,7 +282,7 @@
     #   - We loop include_tasks (legal)
     # ------------------------------------------------------------------------
     - name: Copy templates into target org (create/update via API)
-      ansible.builtin.include_tasks: copy_one_job_template.yml
+      ansible.builtin.include_tasks: _copy_one_job_template.yml
       loop: "{{ templates_work }}"
       loop_control:
         label: "{{ item.0.json.name }}"
