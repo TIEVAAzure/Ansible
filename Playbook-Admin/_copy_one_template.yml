@@ -13,6 +13,10 @@
 # Expect these vars to be passed in from the parent task:
 #   detail:      (dict) source job template detail JSON
 #   survey_rsp:  (dict) response from /survey_spec/ GET (may be 200 or 404)
+- name: Map loop item to expected variables
+  ansible.builtin.set_fact:
+    detail: "{{ item.0.json }}"
+    survey_rsp: "{{ item.1 }}"
 
 - name: Set per-template working vars
   ansible.builtin.set_fact:
