@@ -117,7 +117,7 @@
     # ------------------------------------------------------------------------
     - name: Lookup source org
       ansible.builtin.uri:
-        url: "{{ awx_api_base }}/organizations/?name={{ source_org_name }}"
+        url: "{{ awx_api_base }}/organizations/?name={{ source_org_name | urlencode }}"
         method: GET
         headers: "{{ awx_headers }}"
         validate_certs: "{{ tower_verify_ssl }}"
@@ -126,7 +126,7 @@
 
     - name: Lookup target org
       ansible.builtin.uri:
-        url: "{{ awx_api_base }}/organizations/?name={{ target_org_name }}"
+        url: "{{ awx_api_base }}/organizations/?name={{ source_org_name | urlencode }}"
         method: GET
         headers: "{{ awx_headers }}"
         validate_certs: "{{ tower_verify_ssl }}"
