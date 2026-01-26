@@ -231,9 +231,6 @@
 
     - name: Build safe combined include/exclude regex (from wildcards)
       ansible.builtin.set_fact:
-        # We accept shell-style wildcards in survey inputs (e.g. AZ*, Admin?, *Prod*).
-        # Build a *safe* regex by escaping everything first, then translating only
-        # the wildcard tokens. (Avoids regex errors like "multiple repeat".)
         include_combined: >-
           {{
             (
@@ -241,11 +238,9 @@
               | ternary(
                   '^(?:' ~ (
                     include_patterns
-                    | map('replace', '*', '__WSTAR__')
-                    | map('replace', '?', '__WQ__')
                     | map('regex_escape')
-                    | map('replace', '__WSTAR__', '.*')
-                    | map('replace', '__WQ__', '.')
+                    | map('regex_replace', '\\\\*', '.*')
+                    | map('regex_replace', '\\\\?', '.')
                     | join('|')
                   ) ~ ')$',
                   '.*'
@@ -259,11 +254,9 @@
               | ternary(
                   '^(?:' ~ (
                     exclude_patterns
-                    | map('replace', '*', '__WSTAR__')
-                    | map('replace', '?', '__WQ__')
                     | map('regex_escape')
-                    | map('replace', '__WSTAR__', '.*')
-                    | map('replace', '__WQ__', '.')
+                    | map('regex_replace', '\\\\*', '.*')
+                    | map('regex_replace', '\\\\?', '.')
                     | join('|')
                   ) ~ ')$',
                   'a^'
@@ -271,7 +264,7 @@
             )
           }}
 
-- name: Select templates (apply include/exclude unless copy_all_templates=true)
+    - name: Select templates (apply include/exclude unless copy_all_templates=true)
       ansible.builtin.set_fact:
         selected_templates: >-
           {{
@@ -360,16 +353,168 @@
         templates_work: "{{ jt_details.results | zip(jt_surveys.results) | list }}"
 
     - name: Copy templates into target org (create/update via API)
-      # NOTE: Ansible does not allow `loop:` on a `block:`. To keep the per-template
-      # workflow (lookup -> create/update -> survey -> creds) we run it via include_tasks
-      # and loop the include instead.
-      ansible.builtin.include_tasks: copy_one_job_template.yml
-      loop: "{{ templates_work }}"
-      loop_control:
-        label: "{{ item.0.json.name }}"
       vars:
         detail: "{{ item.0.json }}"
         survey_rsp: "{{ item.1 }}"
+        src_name: "{{ detail.name }}"
+        src_id: "{{ detail.id }}"
+
+        # creds referenced by source template (names)
+        src_cred_names: "{{ (detail.summary_fields.credentials | default([])) | map(attribute='name') | list }}"
+        missing_cred_names: "{{ src_cred_names | reject('in', (dst_cred_map.keys() | list)) | list }}"
+        matched_cred_ids: "{{ src_cred_names | reject('in', missing_cred_names) | map('extract', dst_cred_map) | list }}"
+
+        # inventory mapping: only map Localhost -> target Localhost (else omit)
+        src_inv_name: "{{ detail.summary_fields.inventory.name | default('') }}"
+        mapped_inventory_id: >-
+          {{
+            (src_inv_name == source_localhost_inventory_name)
+            | ternary(target_localhost_inventory_id, omit)
+          }}
+
+        # payload for create/update
+        jt_payload: >-
+          {{
+            {
+              "name": detail.name,
+              "description": (detail.description | default("")),
+              "organization": target_org_id,
+              "project": target_project_id,
+              "playbook": detail.playbook,
+              "job_type": (detail.job_type | default("run")),
+              "become_enabled": (detail.become_enabled | default(false)),
+              "diff_mode": (detail.diff_mode | default(false)),
+              "allow_simultaneous": (detail.allow_simultaneous | default(false)),
+              "ask_credential_on_launch": (detail.ask_credential_on_launch | default(false)),
+              "ask_inventory_on_launch": (detail.ask_inventory_on_launch | default(false)),
+              "ask_variables_on_launch": (detail.ask_variables_on_launch | default(false)),
+              "ask_limit_on_launch": (detail.ask_limit_on_launch | default(false)),
+              "ask_tags_on_launch": (detail.ask_tags_on_launch | default(false)),
+              "ask_skip_tags_on_launch": (detail.ask_skip_tags_on_launch | default(false)),
+              "ask_job_type_on_launch": (detail.ask_job_type_on_launch | default(false)),
+              "ask_verbosity_on_launch": (detail.ask_verbosity_on_launch | default(false)),
+              "ask_diff_mode_on_launch": (detail.ask_diff_mode_on_launch | default(false)),
+              "job_tags": (detail.job_tags | default("")),
+              "skip_tags": (detail.skip_tags | default("")),
+              "limit": (detail.limit | default("")),
+              "verbosity": (detail.verbosity | default(0)),
+              "extra_vars": (detail.extra_vars | default(""))
+            }
+            | combine(
+                (
+                  (allow_only_localhost_inventory_mapping | bool)
+                  | ternary(
+                      (mapped_inventory_id is defined) | ternary({"inventory": mapped_inventory_id}, {}),
+                      {}
+                    )
+                )
+              )
+          }}
+
+      block:
+        - name: Log missing creds (if any)
+          ansible.builtin.set_fact:
+            templates_missing_creds: "{{ templates_missing_creds | combine({ src_name: missing_cred_names }) }}"
+          when: (missing_cred_names | length) > 0
+
+        - name: Log inventory not mapped (non-localhost inventory)
+          ansible.builtin.set_fact:
+            templates_inventory_not_mapped: "{{ templates_inventory_not_mapped + [src_name] }}"
+          when:
+            - allow_only_localhost_inventory_mapping | bool
+            - (src_inv_name | length > 0)
+            - (src_inv_name != source_localhost_inventory_name)
+
+        - name: Lookup existing target template by org + name
+          ansible.builtin.uri:
+            url: "{{ awx_api_base }}/job_templates/?organization={{ target_org_id }}&name={{ src_name | urlencode }}"
+            method: GET
+            headers: "{{ awx_headers }}"
+            validate_certs: "{{ tower_verify_ssl | bool }}"
+            return_content: true
+          register: tgt_lookup
+
+        - name: Create target template (if missing)
+          ansible.builtin.uri:
+            url: "{{ awx_api_base }}/job_templates/"
+            method: POST
+            headers: "{{ awx_headers }}"
+            validate_certs: "{{ tower_verify_ssl | bool }}"
+            body_format: json
+            body: "{{ jt_payload }}"
+            status_code: [201]
+            return_content: true
+          register: tgt_create
+          when: (tgt_lookup.json.count | int) == 0
+
+        - name: Update target template (if exists)
+          ansible.builtin.uri:
+            url: "{{ awx_api_base }}/job_templates/{{ tgt_lookup.json.results[0].id }}/"
+            method: PATCH
+            headers: "{{ awx_headers }}"
+            validate_certs: "{{ tower_verify_ssl | bool }}"
+            body_format: json
+            body: "{{ jt_payload }}"
+            status_code: [200]
+            return_content: true
+          register: tgt_update
+          when: (tgt_lookup.json.count | int) == 1
+
+        - name: Set target template id
+          ansible.builtin.set_fact:
+            target_jt_id: >-
+              {{
+                ((tgt_lookup.json.count | int) == 1)
+                | ternary(tgt_lookup.json.results[0].id, tgt_create.json.id)
+              }}
+
+        - name: Apply survey spec (only if survey is enabled on source and we got a spec)
+          ansible.builtin.uri:
+            url: "{{ awx_api_base }}/job_templates/{{ target_jt_id }}/survey_spec/"
+            method: POST
+            headers: "{{ awx_headers }}"
+            validate_certs: "{{ tower_verify_ssl | bool }}"
+            body_format: json
+            body: "{{ survey_rsp.json }}"
+            status_code: [200]
+            return_content: true
+          when:
+            - (detail.survey_enabled | default(false)) | bool
+            - survey_rsp.status | int == 200
+            - survey_rsp.json is mapping
+
+        - name: Attach credentials (only if ALL creds exist in target; otherwise omit creds)
+          ansible.builtin.uri:
+            url: "{{ awx_api_base }}/job_templates/{{ target_jt_id }}/credentials/"
+            method: POST
+            headers: "{{ awx_headers }}"
+            validate_certs: "{{ tower_verify_ssl | bool }}"
+            body_format: json
+            body:
+              id: "{{ cred_id }}"
+            status_code: [204]
+          loop: "{{ matched_cred_ids }}"
+          loop_control:
+            loop_var: cred_id
+          when:
+            - (missing_cred_names | length) == 0
+
+        - name: If creds are missing and we are NOT allowed to create without missing creds, mark skipped
+          ansible.builtin.set_fact:
+            skipped_templates: "{{ skipped_templates + [src_name] }}"
+          when:
+            - (missing_cred_names | length) > 0
+            - not (create_templates_without_missing_creds | bool)
+
+        - name: Mark template copied
+          ansible.builtin.set_fact:
+            copied_templates: "{{ copied_templates + [src_name] }}"
+          when:
+            - (missing_cred_names | length) == 0 or (create_templates_without_missing_creds | bool)
+
+      loop: "{{ templates_work }}"
+      loop_control:
+        label: "{{ item.0.json.name }}"
 
     # ---------------------------------------------------------------------
     # Summary
