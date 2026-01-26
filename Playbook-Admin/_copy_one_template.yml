@@ -1,18 +1,15 @@
-# -----------------------------------------------------------------------------
-# copy_one_job_template.yml
+---
+# ============================================================================
+# _copy_one_template.yml
 #
-# Purpose:
-#   - Handles ONE job template at a time (create/update) and optionally applies
-#     survey spec + credentials.
+# Called by: Copy Org Job Templates + Surveys playbook (include_tasks + loop)
+# Item shape: (jt_details_result, jt_survey_result)
+#   item.0.json == full job template detail
+#   item.1      == survey_spec GET response (status 200 or 404)
 #
-# Notes:
-#   - Uses ONLY built-in Ansible modules (mainly ansible.builtin.uri).
-#   - Does NOT use awx.awx / tower_* modules/collections (per EE constraints).
-# -----------------------------------------------------------------------------
+# URI-only (ansible.builtin.uri). No awx.awx / tower_* modules required.
+# ============================================================================
 
-# Expect these vars to be passed in from the parent task:
-#   detail:      (dict) source job template detail JSON
-#   survey_rsp:  (dict) response from /survey_spec/ GET (may be 200 or 404)
 - name: Map loop item to expected variables
   ansible.builtin.set_fact:
     detail: "{{ item.0.json }}"
@@ -21,20 +18,49 @@
 - name: Set per-template working vars
   ansible.builtin.set_fact:
     src_name: "{{ detail.name }}"
-    src_id: "{{ detail.id }}"
-    src_cred_names: "{{ (detail.summary_fields.credentials | default([])) | map(attribute='name') | list }}"
-    missing_cred_names: "{{ src_cred_names | reject('in', (dst_cred_map.keys() | list)) | list }}"
-    matched_cred_ids: "{{ (src_cred_names | reject('in', missing_cred_names)) | map('extract', dst_cred_map) | list }}"
     src_inv_name: "{{ detail.summary_fields.inventory.name | default('') }}"
 
-- name: Compute mapped inventory id (only map Localhost -> target Localhost)
-  ansible.builtin.set_fact:
+    # Credentials referenced by source template (names)
+    src_cred_names: "{{ (detail.summary_fields.credentials | default([])) | map(attribute='name') | list }}"
+    missing_cred_names: "{{ src_cred_names | reject('in', (dst_cred_map.keys() | list)) | list }}"
+    matched_cred_ids: "{{ src_cred_names | reject('in', missing_cred_names) | map('extract', dst_cred_map) | list }}"
+
+    # If template uses the expected localhost inventory in source, map it to target localhost inventory.
     mapped_inventory_id: >-
       {{
         (src_inv_name == source_localhost_inventory_name)
-        | ternary(target_localhost_inventory_id, omit)
+        | ternary(target_localhost_inventory_id, none)
       }}
 
+- name: Track missing creds (if any)
+  ansible.builtin.set_fact:
+    templates_missing_creds: "{{ templates_missing_creds | combine({ src_name: missing_cred_names }) }}"
+  when: (missing_cred_names | length) > 0
+
+- name: Track inventory not mapped (non-localhost inventory)
+  ansible.builtin.set_fact:
+    templates_inventory_not_mapped: "{{ templates_inventory_not_mapped + [src_name] }}"
+  when:
+    - allow_only_localhost_inventory_mapping | bool
+    - (src_inv_name | length) > 0
+    - (src_inv_name != source_localhost_inventory_name)
+
+- name: Decide if we should skip due to missing creds
+  ansible.builtin.set_fact:
+    skip_due_to_missing_creds: >-
+      {{
+        (not create_templates_without_missing_creds | bool)
+        and ((missing_cred_names | length) > 0)
+      }}
+
+- name: Mark skipped (missing creds and policy says skip)
+  ansible.builtin.set_fact:
+    skipped_templates: "{{ skipped_templates + [src_name] }}"
+  when: skip_due_to_missing_creds | bool
+
+# ---------------------------------------------------------------------------
+# Build payload (only if we're not skipping)
+# ---------------------------------------------------------------------------
 - name: Build create/update payload for target template
   ansible.builtin.set_fact:
     jt_payload: >-
@@ -68,60 +94,61 @@
             (
               (allow_only_localhost_inventory_mapping | bool)
               | ternary(
-                  (mapped_inventory_id is defined) | ternary({"inventory": mapped_inventory_id}, {}),
+                  (mapped_inventory_id is not none) | ternary({"inventory": mapped_inventory_id}, {}),
                   {}
                 )
             )
           )
       }}
-
-- name: Log missing creds (if any)
-  ansible.builtin.set_fact:
-    templates_missing_creds: "{{ templates_missing_creds | combine({ src_name: missing_cred_names }) }}"
-  when: (missing_cred_names | length) > 0
-
-- name: Log inventory not mapped (non-localhost inventory)
-  ansible.builtin.set_fact:
-    templates_inventory_not_mapped: "{{ templates_inventory_not_mapped + [src_name] }}"
-  when:
-    - allow_only_localhost_inventory_mapping | bool
-    - (src_inv_name | length > 0)
-    - (src_inv_name != source_localhost_inventory_name)
+  when: not (skip_due_to_missing_creds | bool)
 
 - name: Lookup existing target template by org + name
   ansible.builtin.uri:
     url: "{{ awx_api_base }}/job_templates/?organization={{ target_org_id }}&name={{ src_name | urlencode }}"
     method: GET
     headers: "{{ awx_headers }}"
-    validate_certs: "{{ tower_verify_ssl | bool }}"
+    validate_certs: "{{ tower_verify_ssl }}"
     return_content: true
   register: tgt_lookup
+  when: not (skip_due_to_missing_creds | bool)
+
+- name: Guard - target lookup is sane (0 or 1 results only)
+  ansible.builtin.assert:
+    that:
+      - (tgt_lookup.json.count | int) in [0, 1]
+    fail_msg: >
+      Found multiple templates named '{{ src_name }}' in target org. Clean up duplicates before copying.
+  when: not (skip_due_to_missing_creds | bool)
 
 - name: Create target template (if missing)
   ansible.builtin.uri:
     url: "{{ awx_api_base }}/job_templates/"
     method: POST
     headers: "{{ awx_headers }}"
-    validate_certs: "{{ tower_verify_ssl | bool }}"
+    validate_certs: "{{ tower_verify_ssl }}"
     body_format: json
     body: "{{ jt_payload }}"
     status_code: [201]
     return_content: true
   register: tgt_create
-  when: (tgt_lookup.json.count | int) == 0
+  when:
+    - not (skip_due_to_missing_creds | bool)
+    - (tgt_lookup.json.count | int) == 0
 
 - name: Update target template (if exists)
   ansible.builtin.uri:
     url: "{{ awx_api_base }}/job_templates/{{ tgt_lookup.json.results[0].id }}/"
     method: PATCH
     headers: "{{ awx_headers }}"
-    validate_certs: "{{ tower_verify_ssl | bool }}"
+    validate_certs: "{{ tower_verify_ssl }}"
     body_format: json
     body: "{{ jt_payload }}"
     status_code: [200]
     return_content: true
   register: tgt_update
-  when: (tgt_lookup.json.count | int) == 1
+  when:
+    - not (skip_due_to_missing_creds | bool)
+    - (tgt_lookup.json.count | int) == 1
 
 - name: Set target template id
   ansible.builtin.set_fact:
@@ -130,47 +157,46 @@
         ((tgt_lookup.json.count | int) == 1)
         | ternary(tgt_lookup.json.results[0].id, tgt_create.json.id)
       }}
+  when: not (skip_due_to_missing_creds | bool)
 
-- name: Apply survey spec (only if survey is enabled on source and we got a spec)
+# ---------------------------------------------------------------------------
+# Apply survey + credentials
+# ---------------------------------------------------------------------------
+- name: Apply survey spec (only if source has one)
   ansible.builtin.uri:
     url: "{{ awx_api_base }}/job_templates/{{ target_jt_id }}/survey_spec/"
     method: POST
     headers: "{{ awx_headers }}"
-    validate_certs: "{{ tower_verify_ssl | bool }}"
+    validate_certs: "{{ tower_verify_ssl }}"
     body_format: json
     body: "{{ survey_rsp.json }}"
-    status_code: [200]
+    status_code: [200, 201]
     return_content: true
   when:
-    - (detail.survey_enabled | default(false)) | bool
-    - survey_rsp.status | int == 200
+    - not (skip_due_to_missing_creds | bool)
+    - survey_rsp is defined
+    - (survey_rsp.status | int) == 200
     - survey_rsp.json is mapping
 
-- name: Attach credentials (only if ALL creds exist in target; otherwise omit creds)
+- name: Attach credentials (only those that exist in target)
   ansible.builtin.uri:
     url: "{{ awx_api_base }}/job_templates/{{ target_jt_id }}/credentials/"
     method: POST
     headers: "{{ awx_headers }}"
-    validate_certs: "{{ tower_verify_ssl | bool }}"
+    validate_certs: "{{ tower_verify_ssl }}"
     body_format: json
     body:
       id: "{{ cred_id }}"
     status_code: [204]
+    return_content: false
   loop: "{{ matched_cred_ids }}"
   loop_control:
     loop_var: cred_id
   when:
-    - (missing_cred_names | length) == 0
-
-- name: If creds are missing and we are NOT allowed to create without missing creds, mark skipped
-  ansible.builtin.set_fact:
-    skipped_templates: "{{ skipped_templates + [src_name] }}"
-  when:
-    - (missing_cred_names | length) > 0
-    - not (create_templates_without_missing_creds | bool)
+    - not (skip_due_to_missing_creds | bool)
+    - (matched_cred_ids | length) > 0
 
 - name: Mark template copied
   ansible.builtin.set_fact:
     copied_templates: "{{ copied_templates + [src_name] }}"
-  when:
-    - (missing_cred_names | length) == 0 or (create_templates_without_missing_creds | bool)
+  when: not (skip_due_to_missing_creds | bool)

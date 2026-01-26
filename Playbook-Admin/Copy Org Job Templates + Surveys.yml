@@ -1,119 +1,121 @@
 ---
 # ============================================================================
-# Playbook: Copy Org Job Templates + Surveys (Bootstrap-aware) [URI-only]
+# Playbook: Copy Org Job Templates + Surveys (Bootstrap-aware)
 #
 # Purpose:
-#   - Copy Job Templates from one AWX org to another
-#   - Optionally copy Survey Specs and (if possible) Credentials
+#   - Copy Job Templates from a source AWX org to a target AWX org
+#   - Optionally copy Survey Specs
+#   - Optionally attach Credentials (by name match)
 #
-# Constraints:
-#   - Uses ONLY built-in Ansible modules (ansible.builtin.*)
-#   - Does NOT use awx.awx / tower_* modules/collections
+# Key design points:
+#   - URI-only (ansible.builtin.uri). NO awx.awx / tower_* modules required.
+#   - Bootstrap-aligned defaults:
+#       * target_project_name defaults to target_org_name
+#       * target_localhost_inventory_name defaults to "<target_org_name> - Localhost"
+#   - Selection via include/exclude wildcard patterns (* and ?) or "copy_all_templates"
 #
-# Companion file required (same directory):
+# Required companion file (same directory in repo):
 #   - _copy_one_template.yml
 # ============================================================================
 
-- name: "AWX: Copy Job Templates + Surveys (Bootstrap-aware, Selection + Dry Run) [URI-only]"
+- name: "AWX: Copy Job Templates + Surveys (Bootstrap-aware) [URI-only]"
   hosts: localhost
   gather_facts: false
 
-  # IMPORTANT:
-  # Do NOT redefine tower_host / tower_oauth_token / tower_verify_ssl here.
-  # AWX injects them from the Job Template variables.
-
   vars:
-    # Defaults
-    awx_api_base_default: "https://tievaawx01.uksouth.cloudapp.azure.com"
+    # ------------------------------------------------------------------------
+    # Controller connection (provided by AWX Job Template 'Variables')
+    #
+    # Your template variables already contain:
+    #   tower_host: "https://<controller>"
+    #   tower_oauth_token: "<token>"
+    #   tower_verify_ssl: true/false
+    #
+    # IMPORTANT:
+    #   Do not try to "redefine" tower_* here.
+    # ------------------------------------------------------------------------
+    tower_verify_ssl: "{{ tower_verify_ssl | default(true) | bool }}"
+
+    # Normalise API base to https://host/api/v2 (strip trailing slashes)
+    awx_api_base: >-
+      {{
+        (tower_host | default('') | string | trim | regex_replace('/+$',''))
+        ~ '/api/v2'
+      }}
+
+    awx_headers:
+      Authorization: "Bearer {{ tower_oauth_token }}"
+      Content-Type: "application/json"
+
+    # Behaviour toggles (normally Survey-driven)
+    dry_run: "{{ dry_run | default(false) | bool }}"
+    debug_mode: "{{ debug_mode | default(false) | bool }}"
+
+    # If true, only map templates that use the "source_localhost_inventory_name"
+    # inventory; all other inventories are left unmapped (and logged).
+    allow_only_localhost_inventory_mapping: "{{ allow_only_localhost_inventory_mapping | default(true) | bool }}"
+
+    # If true, templates will still be created/updated even if some credentials
+    # referenced by the source template do not exist in the target org.
+    create_templates_without_missing_creds: "{{ create_templates_without_missing_creds | default(true) | bool }}"
+
+    # Selection inputs
+    copy_all_templates: "{{ copy_all_templates | default(false) | bool }}"
+    template_include: "{{ template_include | default('') | string }}"
+    template_exclude: "{{ template_exclude | default('') | string }}"
+
+    # ------------------------------------------------------------------------
+    # Bootstrap-aligned defaults (KEEP CONSISTENT WITH BOOTSTRAP PLAYBOOK)
+    # ------------------------------------------------------------------------
+    # Bootstrap creates:
+    #   - Org:       target_org_name
+    #   - Project:   target_org_name
+    #   - Inventory: "<target_org_name> - Localhost"
+    target_project_name: "{{ target_project_name | default(target_org_name) }}"
+    target_localhost_inventory_name: "{{ target_localhost_inventory_name | default(target_org_name ~ ' - Localhost') }}"
+
+    # What inventory name the MASTER templates use for localhost (adjust if needed)
+    source_localhost_inventory_name: "{{ source_localhost_inventory_name | default('Master - Localhost') }}"
+
+    # Paging
     page_size: 200
 
-    # Inputs (read from AWX job template / survey; do not self-reference internal vars)
-    awx_api_base_input: "{{ (tower_host | default('')) }}"
-    awx_token_input: "{{ (tower_oauth_token | default('')) }}"
-    verify_ssl_input: "{{ (tower_verify_ssl | default(true)) }}"
-
-    copy_all_templates_input: "{{ (copy_all_templates | default(false)) }}"
-    template_include_input: "{{ (template_include | default('')) }}"
-    template_exclude_input: "{{ (template_exclude | default('')) }}"
-    dry_run_input: "{{ (dry_run | default(false)) }}"
-    debug_mode_input: "{{ (debug_mode | default(false)) }}"
-
   tasks:
-    # ------------------------------------------------------------------------
-    # Normalise connection + flags (NO empty set_fact possible)
-    # ------------------------------------------------------------------------
-    - name: Normalise controller connection variables + flags
-      ansible.builtin.set_fact:
-        tower_verify_ssl: "{{ verify_ssl_input | bool }}"
-        awx_token: "{{ awx_token_input | string }}"
-        copy_all_templates: "{{ copy_all_templates_input | bool }}"
-        template_include: "{{ template_include_input | string }}"
-        template_exclude: "{{ template_exclude_input | string }}"
-        dry_run: "{{ dry_run_input | bool }}"
-        debug_mode: "{{ debug_mode_input | bool }}"
-        awx_api_base: >-
-          {{
-            (
-              (
-                awx_api_base_input
-                if (awx_api_base_input is string and awx_api_base_input | length > 0)
-                else awx_api_base_default
-              )
-              | regex_replace('/+$', '')
-            )
-            ~ (
-              '/api/v2'
-              if (
-                (
-                  (
-                    awx_api_base_input
-                    if (awx_api_base_input is string and awx_api_base_input | length > 0)
-                    else awx_api_base_default
-                  )
-                  | regex_replace('/+$', '')
-                ) is not search('/api/v2$')
-              )
-              else ''
-            )
-          }}
-
-    - name: Guard - ensure required inputs are present
+    - name: Guard - ensure controller connection is configured
       ansible.builtin.assert:
         that:
-          - awx_api_base is string
-          - awx_api_base | length > 0
-          - awx_token is string
-          - awx_token | length > 0
-          - source_org_name is defined
-          - target_org_name is defined
-        fail_msg: "Missing/invalid tower_host/tower_oauth_token or source_org_name/target_org_name"
+          - tower_host is defined and (tower_host | string | length > 0)
+          - tower_oauth_token is defined and (tower_oauth_token | string | length > 0)
+        fail_msg: >
+          Missing controller connection details. Ensure the AWX Job Template Variables include
+          tower_host and tower_oauth_token.
 
-    - name: Set common AWX headers
-      ansible.builtin.set_fact:
-        awx_headers:
-          Authorization: "Bearer {{ awx_token }}"
-          Content-Type: "application/json"
-
-    - name: Initialise tracking (for include file)
-      ansible.builtin.set_fact:
-        copied_templates: []
-        skipped_templates: []
-        templates_missing_creds: {}
-        templates_inventory_not_mapped: []
+    - name: Guard - ensure org inputs are present
+      ansible.builtin.assert:
+        that:
+          - source_org_name is defined and (source_org_name | string | length > 0)
+          - target_org_name is defined and (target_org_name | string | length > 0)
+        fail_msg: >
+          You must provide source_org_name and target_org_name (Survey / extra vars).
 
     - name: Debug - show resolved controller inputs
       ansible.builtin.debug:
         msg:
           - "awx_api_base={{ awx_api_base }}"
           - "tower_verify_ssl={{ tower_verify_ssl }}"
+          - "source_org_name={{ source_org_name }}"
+          - "target_org_name={{ target_org_name }}"
+          - "target_project_name={{ target_project_name }}"
+          - "source_localhost_inventory_name={{ source_localhost_inventory_name }}"
+          - "target_localhost_inventory_name={{ target_localhost_inventory_name }}"
           - "copy_all_templates={{ copy_all_templates }}"
-          - "template_include='{{ template_include }}'"
-          - "template_exclude='{{ template_exclude }}'"
+          - "template_include={{ template_include }}"
+          - "template_exclude={{ template_exclude }}"
           - "dry_run={{ dry_run }}"
-      when: debug_mode
+      when: debug_mode | bool
 
     # ------------------------------------------------------------------------
-    # Lookup org IDs
+    # Lookups: org IDs
     # ------------------------------------------------------------------------
     - name: Lookup source org
       ansible.builtin.uri:
@@ -122,105 +124,112 @@
         headers: "{{ awx_headers }}"
         validate_certs: "{{ tower_verify_ssl }}"
         return_content: true
-      register: source_org
+      register: src_org_rsp
 
     - name: Lookup target org
       ansible.builtin.uri:
-        url: "{{ awx_api_base }}/organizations/?name={{ source_org_name | urlencode }}"
+        url: "{{ awx_api_base }}/organizations/?name={{ target_org_name | urlencode }}"
         method: GET
         headers: "{{ awx_headers }}"
         validate_certs: "{{ tower_verify_ssl }}"
         return_content: true
-      register: target_org
+      register: dst_org_rsp
 
     - name: Guard - org lookups returned exactly one result each
       ansible.builtin.assert:
         that:
-          - source_org.json.count == 1
-          - target_org.json.count == 1
-        fail_msg: "Org lookup did not return exactly one result for source/target"
+          - (src_org_rsp.json.count | int) == 1
+          - (dst_org_rsp.json.count | int) == 1
+        fail_msg: >
+          Expected exactly 1 org result for both source and target.
+          Check org names (duplicates?) and try again.
 
     - name: Set org IDs
       ansible.builtin.set_fact:
-        source_org_id: "{{ source_org.json.results[0].id }}"
-        target_org_id: "{{ target_org.json.results[0].id }}"
+        source_org_id: "{{ src_org_rsp.json.results[0].id }}"
+        target_org_id: "{{ dst_org_rsp.json.results[0].id }}"
 
     # ------------------------------------------------------------------------
-    # Target bootstrap lookups (project / localhost inventory / creds map)
-    # NOTE: if these aren’t part of your process yet, these tasks make the
-    # include file variables exist and prevent undefined-var crashes.
+    # Lookups: target project (bootstrap created it with name == target_org_name)
     # ------------------------------------------------------------------------
-    - name: Lookup target project by name
-      ansible.builtin.assert:
-        that:
-          - target_project_name is defined
-        fail_msg: "You must provide target_project_name (survey/extra var)."
-    - name: Get target project id
+    - name: Lookup target project by org + name
       ansible.builtin.uri:
         url: "{{ awx_api_base }}/projects/?organization={{ target_org_id }}&name={{ target_project_name | urlencode }}"
         method: GET
         headers: "{{ awx_headers }}"
         validate_certs: "{{ tower_verify_ssl }}"
         return_content: true
-      register: tgt_proj
+      register: dst_project_rsp
 
-    - name: Guard - target project found
+    - name: Guard - target project exists (bootstrap must run first)
       ansible.builtin.assert:
         that:
-          - tgt_proj.json.count == 1
-        fail_msg: "Target project not found (check target_project_name)."
+          - (dst_project_rsp.json.count | int) == 1
+        fail_msg: >
+          Target project '{{ target_project_name }}' not found in org '{{ target_org_name }}'.
+          Run the bootstrap playbook first or fix naming.
 
-    - name: Set target_project_id
+    - name: Set target project ID
       ansible.builtin.set_fact:
-        target_project_id: "{{ tgt_proj.json.results[0].id }}"
+        target_project_id: "{{ dst_project_rsp.json.results[0].id }}"
 
-    - name: Default localhost inventory names (override via vars if you want)
-      ansible.builtin.set_fact:
-        source_localhost_inventory_name: "{{ source_localhost_inventory_name | default('Master - Localhost') }}"
-        target_localhost_inventory_name: "{{ target_localhost_inventory_name | default('Master - Localhost') }}"
-        allow_only_localhost_inventory_mapping: "{{ allow_only_localhost_inventory_mapping | default(true) | bool }}"
-        create_templates_without_missing_creds: "{{ create_templates_without_missing_creds | default(true) | bool }}"
-
-    - name: Lookup target localhost inventory id
+    # ------------------------------------------------------------------------
+    # Lookups: target localhost inventory (bootstrap created it)
+    # ------------------------------------------------------------------------
+    - name: Lookup target localhost inventory by org + name
       ansible.builtin.uri:
         url: "{{ awx_api_base }}/inventories/?organization={{ target_org_id }}&name={{ target_localhost_inventory_name | urlencode }}"
         method: GET
         headers: "{{ awx_headers }}"
         validate_certs: "{{ tower_verify_ssl }}"
         return_content: true
-      register: tgt_inv
+      register: dst_local_inv_rsp
 
-    - name: Guard - target localhost inventory found
+    - name: Guard - target localhost inventory exists (bootstrap must run first)
       ansible.builtin.assert:
         that:
-          - tgt_inv.json.count == 1
-        fail_msg: "Target localhost inventory not found (check target_localhost_inventory_name)."
+          - (dst_local_inv_rsp.json.count | int) == 1
+        fail_msg: >
+          Target inventory '{{ target_localhost_inventory_name }}' not found in org '{{ target_org_name }}'.
+          Run the bootstrap playbook first or fix naming.
 
-    - name: Set target_localhost_inventory_id
+    - name: Set target localhost inventory ID
       ansible.builtin.set_fact:
-        target_localhost_inventory_id: "{{ tgt_inv.json.results[0].id }}"
+        target_localhost_inventory_id: "{{ dst_local_inv_rsp.json.results[0].id }}"
 
-    - name: Build target credential name->id map
+    # ------------------------------------------------------------------------
+    # Preload target org credentials (map name -> id)
+    # ------------------------------------------------------------------------
+    - name: Fetch credentials in target org
       ansible.builtin.uri:
         url: "{{ awx_api_base }}/credentials/?organization={{ target_org_id }}&page_size={{ page_size }}"
         method: GET
         headers: "{{ awx_headers }}"
         validate_certs: "{{ tower_verify_ssl }}"
         return_content: true
-      register: tgt_creds
+      register: dst_creds_rsp
 
-    - name: Guard - creds pagination not required
+    - name: Guard - credentials pagination not required (page_size={{ page_size }})
       ansible.builtin.assert:
         that:
-          - tgt_creds.json.next is not defined or tgt_creds.json.next is none
-        fail_msg: "Pagination required for credentials - increase page_size or implement paging."
+          - dst_creds_rsp.json.next is none
+        fail_msg: >
+          Target org has more than {{ page_size }} credentials and requires pagination.
+          Increase page_size or add pagination logic.
 
-    - name: Set dst_cred_map
+    - name: Build target credential name->id map
       ansible.builtin.set_fact:
-        dst_cred_map: "{{ dict(tgt_creds.json.results | map(attribute='name') | zip(tgt_creds.json.results | map(attribute='id'))) }}"
+        dst_cred_map: >-
+          {{
+            dict(
+              (dst_creds_rsp.json.results | default([]))
+              | map(attribute='name')
+              | zip((dst_creds_rsp.json.results | default([])) | map(attribute='id'))
+            )
+          }}
 
     # ------------------------------------------------------------------------
-    # Fetch job templates from source org
+    # Fetch source org job templates
     # ------------------------------------------------------------------------
     - name: Fetch job templates in source org
       ansible.builtin.uri:
@@ -229,80 +238,97 @@
         headers: "{{ awx_headers }}"
         validate_certs: "{{ tower_verify_ssl }}"
         return_content: true
-      register: source_templates_raw
+      register: src_jt_rsp
 
-    - name: Guard - templates pagination not required
+    - name: Guard - templates pagination not required (page_size={{ page_size }})
       ansible.builtin.assert:
         that:
-          - source_templates_raw.json.next is not defined or source_templates_raw.json.next is none
-        fail_msg: "Pagination required for templates - increase page_size or implement paging."
-
-    - name: Set source templates list
-      ansible.builtin.set_fact:
-        source_templates: "{{ source_templates_raw.json.results }}"
+          - src_jt_rsp.json.next is none
+        fail_msg: >
+          Source org has more than {{ page_size }} templates and requires pagination.
+          Increase page_size or add pagination logic.
 
     # ------------------------------------------------------------------------
-    # Selection (wildcard include/exclude -> safe regex)
+    # Selection logic
     # ------------------------------------------------------------------------
-    - name: Parse include/exclude patterns (comma-separated wildcards)
+    - name: Parse include/exclude patterns (comma-separated)
       ansible.builtin.set_fact:
         include_patterns: >-
           {{
-            template_include.split(',')
+            (template_include | string)
+            | split(',')
             | map('trim')
             | reject('equalto', '')
-            | map('regex_escape')
-            | map('regex_replace', '\\*', '.*')
             | list
-            if template_include | length > 0
-            else ['.*']
           }}
         exclude_patterns: >-
           {{
-            template_exclude.split(',')
+            (template_exclude | string)
+            | split(',')
             | map('trim')
             | reject('equalto', '')
-            | map('regex_escape')
-            | map('regex_replace', '\\*', '.*')
             | list
-            if template_exclude | length > 0
-            else []
+          }}
+
+    - name: Build include/exclude regex (from wildcards)
+      ansible.builtin.set_fact:
+        include_combined: >-
+          {{
+            (
+              ((include_patterns | length) > 0)
+              | ternary(
+                  '^(?:' ~ (
+                    include_patterns
+                    | map('regex_escape')
+                    | map('regex_replace', '\\*', '.*')
+                    | map('regex_replace', '\\?', '.')
+                    | join('|')
+                  ) ~ ')$',
+                  '.*'
+                )
+            )
+          }}
+        exclude_combined: >-
+          {{
+            (
+              ((exclude_patterns | length) > 0)
+              | ternary(
+                  '^(?:' ~ (
+                    exclude_patterns
+                    | map('regex_escape')
+                    | map('regex_replace', '\\*', '.*')
+                    | map('regex_replace', '\\?', '.')
+                    | join('|')
+                  ) ~ ')$',
+                  'a^'
+                )
+            )
           }}
 
     - name: Select templates
       ansible.builtin.set_fact:
         selected_templates: >-
           {{
-            source_templates
-            if copy_all_templates
-            else
-            (
-              source_templates
-              | selectattr('name', 'match', include_patterns | join('|'))
-              | rejectattr('name', 'match', exclude_patterns | join('|'))
-              | list
-            )
+            (src_jt_rsp.json.results | default([]))
+            | selectattr('name', 'defined')
+            | selectattr('name', 'match', (copy_all_templates | bool) | ternary('.*', include_combined))
+            | rejectattr('name', 'match', exclude_combined)
+            | list
           }}
 
     - name: Guard - at least one template selected
       ansible.builtin.assert:
         that:
-          - selected_templates | length > 0
-        fail_msg: "No templates matched selection."
+          - (selected_templates | length) > 0
+        fail_msg: >
+          No templates selected. Check include/exclude patterns or set copy_all_templates=true.
 
-    - name: Dry run - list what would be copied (names only)
-      ansible.builtin.debug:
-        msg:
-          - "DRY RUN: would copy {{ selected_templates | length }} templates from '{{ source_org_name }}' -> '{{ target_org_name }}':"
-          - "{{ selected_templates | map(attribute='name') | list }}"
-      when: dry_run
-
-    - name: Stop after dry run
+    - name: Dry run - stop after selection
       ansible.builtin.meta: end_play
-      when: dry_run
+      when: dry_run | bool
 
     # ------------------------------------------------------------------------
-    # Fetch details + survey specs, then loop include_tasks (LEGAL pattern)
+    # Fetch details + survey specs, then loop include_tasks (legal pattern)
     # ------------------------------------------------------------------------
     - name: Fetch full detail for each selected template
       ansible.builtin.uri:
@@ -333,8 +359,23 @@
       ansible.builtin.set_fact:
         templates_work: "{{ jt_details.results | zip(jt_surveys.results) | list }}"
 
+    - name: Initialise tracking
+      ansible.builtin.set_fact:
+        copied_templates: []
+        skipped_templates: []
+        templates_missing_creds: {}
+        templates_inventory_not_mapped: []
+
     - name: Copy templates into target org (create/update + survey + creds)
-      ansible.builtin.include_tasks: _copy_one_template.yml
+      ansible.builtin.include_tasks: "_copy_one_template.yml"
       loop: "{{ templates_work }}"
       loop_control:
         label: "{{ item.0.json.name }}"
+
+    - name: Summary
+      ansible.builtin.debug:
+        msg:
+          - "Copied: {{ copied_templates | length }} -> {{ copied_templates }}"
+          - "Skipped: {{ skipped_templates | length }} -> {{ skipped_templates }}"
+          - "Missing creds: {{ templates_missing_creds }}"
+          - "Inventory not mapped: {{ templates_inventory_not_mapped }}"
