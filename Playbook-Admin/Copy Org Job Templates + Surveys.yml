@@ -1,16 +1,17 @@
 ---
 # ============================================================================
 # Playbook: Copy Org Job Templates + Surveys (Bootstrap-aware)
+#
 # Purpose:
-#   - Copies Job Templates from a source org to a target org
-#   - Also copies Survey Spec (when present)
+#   - Copy Job Templates from one AWX org to another
+#   - Optionally copy Survey Specs and Credentials
 #
-# IMPORTANT:
-#   - URI-only implementation (no awx.awx / tower modules)
-#   - Avoids illegal "loop on block" by looping include_tasks instead
-#   - Requires bootstrap artefacts exist in the target org (Project/Inventory etc.)
+# Design decisions:
+#   - URI-only (no awx.awx / tower_* modules)
+#   - include_tasks + loop (NO block+loop – illegal in Ansible)
+#   - Defensive guards + verbose annotations
 #
-# Required companion file (same folder):
+# Companion file required (same directory):
 #   - copy_one_job_template.yml
 # ============================================================================
 
@@ -19,41 +20,58 @@
   gather_facts: false
 
   vars:
-    # AWX / Controller API base (no trailing slash preferred, but we tolerate either)
-    awx_api_base: "{{ awx_api_base | default('https://tievaawx01.uksouth.cloudapp.azure.com/api/v2') }}"
+    # ------------------------------------------------------------------------
+    # RAW inputs (do NOT template these here)
+    # ------------------------------------------------------------------------
+    awx_api_base_input: "{{ awx_api_base | default(omit) }}"
+    awx_token_input: "{{ awx_token | default(omit) }}"
 
-    # Token should be provided via AWX credential / extra vars
-    awx_token: "{{ awx_token }}"
-
-    # Paging – keep high to avoid pagination complexity (we assert next == null)
+    # Defaults / constants
+    awx_api_base_default: "https://tievaawx01.uksouth.cloudapp.azure.com/api/v2"
     page_size: 200
 
-    # TLS verify toggle (set in surveys normally)
-    tower_verify_ssl: "{{ tower_verify_ssl | default(true) }}"
-
-    # Selection inputs (typically from Survey)
+    # Behaviour flags (normally survey-driven)
     copy_all_templates: "{{ copy_all_templates | default(false) | bool }}"
     template_include: "{{ template_include | default('') }}"
     template_exclude: "{{ template_exclude | default('') }}"
     dry_run: "{{ dry_run | default(false) | bool }}"
     debug_mode: "{{ debug_mode | default(false) | bool }}"
 
-    # Standard headers for AWX API
-    awx_headers:
-      Authorization: "Bearer {{ awx_token }}"
-      Content-Type: "application/json"
+    # SSL
+    tower_verify_ssl: "{{ tower_verify_ssl | default(true) | bool }}"
 
   tasks:
 
     # ------------------------------------------------------------------------
-    # Guards / sanity
+    # Normalise controller connection variables (CRITICAL FIX)
     # ------------------------------------------------------------------------
+    - name: Normalise AWX API base URL
+      ansible.builtin.set_fact:
+        awx_api_base: >-
+          {{
+            (awx_api_base_input is string and awx_api_base_input | length > 0)
+            | ternary(awx_api_base_input, awx_api_base_default)
+          }}
+
+    - name: Normalise AWX token
+      ansible.builtin.set_fact:
+        awx_token: "{{ awx_token_input }}"
+      when: awx_token_input is defined
+
     - name: Guard - ensure controller connection variables are present
       ansible.builtin.assert:
         that:
-          - awx_api_base is defined
+          - awx_api_base is string
+          - awx_api_base | length > 0
           - awx_token is defined
-        fail_msg: "Missing awx_api_base or awx_token"
+          - awx_token | length > 0
+        fail_msg: "Missing or invalid awx_api_base / awx_token"
+
+    - name: Set common AWX headers
+      ansible.builtin.set_fact:
+        awx_headers:
+          Authorization: "Bearer {{ awx_token }}"
+          Content-Type: "application/json"
 
     - name: Guard - ensure org inputs provided
       ansible.builtin.assert:
@@ -62,15 +80,14 @@
           - target_org_name is defined
         fail_msg: "Missing source_org_name or target_org_name"
 
-    - name: Debug - show raw selection inputs
+    - name: Debug - show raw inputs
       ansible.builtin.debug:
         msg:
-          - "copy_all_templates={{ copy_all_templates }}"
-          - "template_include='{{ template_include }}'"
-          - "template_exclude='{{ template_exclude }}'"
-          - "dry_run={{ dry_run }}"
-          - "debug_mode={{ debug_mode }}"
           - "awx_api_base={{ awx_api_base }}"
+          - "copy_all_templates={{ copy_all_templates }}"
+          - "template_include={{ template_include }}"
+          - "template_exclude={{ template_exclude }}"
+          - "dry_run={{ dry_run }}"
       when: debug_mode
 
     # ------------------------------------------------------------------------
@@ -99,7 +116,6 @@
         that:
           - source_org.json.count == 1
           - target_org.json.count == 1
-        fail_msg: "Org lookup did not return exactly one result for source/target"
 
     - name: Set org IDs
       ansible.builtin.set_fact:
@@ -109,7 +125,7 @@
     # ------------------------------------------------------------------------
     # Fetch job templates from source org
     # ------------------------------------------------------------------------
-    - name: Fetch job templates in source org (page_size={{ page_size }})
+    - name: Fetch job templates in source org
       ansible.builtin.uri:
         url: "{{ awx_api_base }}/job_templates/?organization={{ source_org_id }}&page_size={{ page_size }}"
         method: GET
@@ -118,28 +134,19 @@
         return_content: true
       register: source_templates_raw
 
-    - name: Guard - templates pagination not required (increase page_size or add paging)
+    - name: Guard - pagination not required
       ansible.builtin.assert:
         that:
           - source_templates_raw.json.next is not defined or source_templates_raw.json.next is none
-        fail_msg: "Pagination required - increase page_size or implement paging"
 
     - name: Set source templates list
       ansible.builtin.set_fact:
         source_templates: "{{ source_templates_raw.json.results }}"
 
-    - name: Debug - show first 50 template names (troubleshooting)
-      ansible.builtin.debug:
-        msg: "{{ source_templates | map(attribute='name') | list | slice(0, 50) }}"
-      when: debug_mode
-
     # ------------------------------------------------------------------------
-    # Parse include/exclude (wildcards) -> safe regex
-    # NOTE:
-    #   - We escape first, then convert '*' to '.*'
-    #   - This avoids regex "multiple repeat" failures
+    # Parse include / exclude wildcards safely
     # ------------------------------------------------------------------------
-    - name: Parse include/exclude patterns (comma-separated wildcards)
+    - name: Parse include/exclude patterns
       ansible.builtin.set_fact:
         include_patterns: >-
           {{
@@ -164,7 +171,7 @@
             else []
           }}
 
-    - name: Select templates (apply include/exclude unless copy_all_templates=true)
+    - name: Select templates
       ansible.builtin.set_fact:
         selected_templates: >-
           {{
@@ -179,23 +186,15 @@
             )
           }}
 
-    - name: Guard - at least one template selected
+    - name: Guard - templates selected
       ansible.builtin.assert:
         that:
           - selected_templates | length > 0
-        fail_msg: >-
-          No templates matched selection.
-          TIP: include like 'AZ*' or 'AVD*' (no spaces). Enable debug_mode to print names.
+        fail_msg: "No templates matched selection"
 
-    - name: Set selected template names (for reporting)
-      ansible.builtin.set_fact:
-        selected_template_names: "{{ selected_templates | map(attribute='name') | list }}"
-
-    - name: Dry run - list what would be copied (names only)
+    - name: Dry run output
       ansible.builtin.debug:
-        msg:
-          - "DRY RUN: would copy {{ selected_template_names | length }} templates from '{{ source_org_name }}' -> '{{ target_org_name }}':"
-          - "{{ selected_template_names }}"
+        msg: "{{ selected_templates | map(attribute='name') | list }}"
       when: dry_run
 
     - name: Stop after dry run
@@ -203,9 +202,9 @@
       when: dry_run
 
     # ------------------------------------------------------------------------
-    # Fetch full details + survey specs for each selected template
+    # Fetch details + surveys
     # ------------------------------------------------------------------------
-    - name: Fetch full detail for each selected template
+    - name: Fetch full detail for each template
       ansible.builtin.uri:
         url: "{{ awx_api_base }}/job_templates/{{ item.id }}/"
         method: GET
@@ -213,11 +212,9 @@
         validate_certs: "{{ tower_verify_ssl }}"
         return_content: true
       loop: "{{ selected_templates }}"
-      loop_control:
-        label: "{{ item.name }}"
       register: jt_details
 
-    - name: Fetch survey spec for each selected template (200 or 404)
+    - name: Fetch survey specs
       ansible.builtin.uri:
         url: "{{ awx_api_base }}/job_templates/{{ item.id }}/survey_spec/"
         method: GET
@@ -226,21 +223,16 @@
         return_content: true
         status_code: [200, 404]
       loop: "{{ selected_templates }}"
-      loop_control:
-        label: "{{ item.name }}"
       register: jt_surveys
 
-    - name: Build work list (detail + survey paired)
+    - name: Build work list
       ansible.builtin.set_fact:
         templates_work: "{{ jt_details.results | zip(jt_surveys.results) | list }}"
 
     # ------------------------------------------------------------------------
-    # Copy templates into target org
-    # IMPORTANT:
-    #   - DO NOT use a block with loop (illegal)
-    #   - We loop include_tasks (legal)
+    # Copy templates (LEGAL loop)
     # ------------------------------------------------------------------------
-    - name: Copy templates into target org (create/update via API)
+    - name: Copy templates into target org
       ansible.builtin.include_tasks: copy_one_job_template.yml
       loop: "{{ templates_work }}"
       loop_control:
