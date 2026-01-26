@@ -62,7 +62,6 @@
           - awx_token | length > 0
         fail_msg: "Missing or invalid awx_api_base / awx_token"
 
-
     - name: Set common AWX headers
       ansible.builtin.set_fact:
         awx_headers:
