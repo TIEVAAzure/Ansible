@@ -47,25 +47,21 @@
     # ------------------------------------------------------------------------
     - name: Normalise AWX API base URL
       ansible.builtin.set_fact:
-        awx_api_base: >-
-          {{
-            (awx_api_base_input is string and awx_api_base_input | length > 0)
-            | ternary(awx_api_base_input, awx_api_base_default)
-          }}
+        awx_api_base: "{{ (awx_api_base_input if (awx_api_base_input is string and awx_api_base_input | length > 0) else awx_api_base_default) }}"
 
     - name: Normalise AWX token
       ansible.builtin.set_fact:
-        awx_token: "{{ awx_token_input }}"
-      when: awx_token_input is defined
+        awx_token: "{{ awx_token_input | default('') }}"
 
     - name: Guard - ensure controller connection variables are present
       ansible.builtin.assert:
         that:
           - awx_api_base is string
           - awx_api_base | length > 0
-          - awx_token is defined
+          - awx_token is string
           - awx_token | length > 0
         fail_msg: "Missing or invalid awx_api_base / awx_token"
+
 
     - name: Set common AWX headers
       ansible.builtin.set_fact:
