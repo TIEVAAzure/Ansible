@@ -20,31 +20,27 @@
   gather_facts: false
 
   vars:
-    # ------------------------------------------------------------------------
-    # Inputs as stored on the AWX Job Template (you showed these in your UI)
-    # ------------------------------------------------------------------------
-    tower_host: "{{ tower_host | default(omit) }}"
-    tower_oauth_token: "{{ tower_oauth_token | default(omit) }}"
-    tower_verify_ssl: "{{ tower_verify_ssl | default(true) | bool }}"
+  # ------------------------------------------------------------------------
+  # Values PROVIDED by the AWX Job Template:
+  #   - tower_host
+  #   - tower_oauth_token
+  #   - tower_verify_ssl
+  #
+  # DO NOT redefine them here.
+  # ------------------------------------------------------------------------
 
-    # ------------------------------------------------------------------------
-    # Normalised internal names (we use these everywhere in the playbook)
-    # NOTE: tower_host is typically like https://host (NO /api/v2)
-    # We normalise it to https://host/api/v2
-    # ------------------------------------------------------------------------
-    awx_api_base_default: "https://tievaawx01.uksouth.cloudapp.azure.com"
-    awx_api_base_input: "{{ tower_host | default(omit) }}"
-    awx_token_input: "{{ tower_oauth_token | default(omit) }}"
+  # Normalised internal names (used everywhere else)
+  awx_api_base_default: "https://tievaawx01.uksouth.cloudapp.azure.com"
+  awx_api_base_input: "{{ tower_host | default('') }}"
+  awx_token_input: "{{ tower_oauth_token | default('') }}"
 
-    # Paging – keep high to avoid pagination complexity (we assert next == null)
-    page_size: 200
+  page_size: 200
 
-    # Selection inputs (normally from Survey)
-    copy_all_templates: "{{ copy_all_templates | default(false) | bool }}"
-    template_include: "{{ template_include | default('') }}"
-    template_exclude: "{{ template_exclude | default('') }}"
-    dry_run: "{{ dry_run | default(false) | bool }}"
-    debug_mode: "{{ debug_mode | default(false) | bool }}"
+  copy_all_templates: "{{ copy_all_templates | default(false) | bool }}"
+  template_include: "{{ template_include | default('') }}"
+  template_exclude: "{{ template_exclude | default('') }}"
+  dry_run: "{{ dry_run | default(false) | bool }}"
+  debug_mode: "{{ debug_mode | default(false) | bool }}"
 
   tasks:
 
